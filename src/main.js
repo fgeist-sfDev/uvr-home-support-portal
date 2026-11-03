@@ -42,6 +42,27 @@ function setFeedback(error = '', notice = '') {
   state.notice = notice;
 }
 
+function userFacingError(error, fallback) {
+  const message = typeof error?.message === 'string' ? error.message.toLocaleLowerCase('en') : '';
+  const code = typeof error?.code === 'string' ? error.code.toLocaleLowerCase('en') : '';
+
+  if (code === 'signup_disabled' || message.includes('signups not allowed for otp') || message.includes('user not found')) {
+    return 'Ese correo todavía no tiene una cuenta de soporte. Pedile al administrador que te invite desde Supabase y te habilite como agente.';
+  }
+  if (code === 'over_email_send_rate_limit' || message.includes('rate limit') || message.includes('too many requests')) {
+    return 'Se alcanzó el límite de envíos de correo. Esperá unos minutos y volvé a intentar.';
+  }
+  if (message.includes('invalid email') || message.includes('email address is invalid')) {
+    return 'Revisá que el correo esté escrito correctamente.';
+  }
+  if (message.includes('failed to fetch') || message.includes('network request failed')) {
+    return 'No pudimos conectar con el servicio. Revisá tu conexión e intentá de nuevo.';
+  }
+
+  console.error('Error en el portal de soporte:', error);
+  return fallback;
+}
+
 function renderFeedback(parent) {
   if (state.error) parent.append(element('p', 'feedback error', state.error));
   if (state.notice) parent.append(element('p', 'feedback success', state.notice));
@@ -92,11 +113,11 @@ function renderLogin() {
         },
       });
       setFeedback(
-        error?.message || '',
+        error ? userFacingError(error, 'No pudimos enviar el enlace. Revisá tu conexión e intentá de nuevo.') : '',
         error ? '' : 'Si el correo está habilitado para soporte, vas a recibir el enlace en unos minutos.'
       );
     } catch (error) {
-      setFeedback(error.message || 'No pudimos enviar el enlace. Probá de nuevo.');
+      setFeedback(userFacingError(error, 'No pudimos enviar el enlace. Revisá tu conexión e intentá de nuevo.'));
     } finally {
       state.busy = false;
     }
@@ -270,7 +291,7 @@ async function loadTickets() {
     .order('last_message_at', { ascending: false })
     .limit(200);
   if (error) {
-    setFeedback(error.message);
+    setFeedback(userFacingError(error, 'No pudimos cargar los tickets. Probá de nuevo.'));
     renderDashboard();
     return;
   }
@@ -289,7 +310,7 @@ async function loadMessages(ticketId) {
     .limit(200);
   if (state.selectedId !== ticketId || requestId !== state.messageRequest) return;
   if (error) {
-    setFeedback(error.message);
+    setFeedback(userFacingError(error, 'No pudimos cargar los mensajes. Probá de nuevo.'));
     renderDashboard();
     return;
   }
@@ -315,7 +336,7 @@ async function sendReply(ticketId, body) {
   });
   state.busy = false;
   if (error) {
-    setFeedback(error.message);
+    setFeedback(userFacingError(error, 'No pudimos enviar la respuesta. Probá de nuevo.'));
     renderDashboard();
     return;
   }
@@ -332,7 +353,7 @@ async function updateStatus(ticketId, status) {
     p_status: status,
   });
   state.busy = false;
-  if (error) setFeedback(error.message);
+  if (error) setFeedback(userFacingError(error, 'No pudimos actualizar el estado. Probá de nuevo.'));
   else setFeedback('', 'Estado actualizado.');
   await loadTickets();
 }
@@ -340,7 +361,7 @@ async function updateStatus(ticketId, status) {
 async function signOut() {
   const { error } = await state.supabase.auth.signOut();
   if (error) {
-    setFeedback(error.message);
+    setFeedback(userFacingError(error, 'No pudimos cerrar la sesión. Probá de nuevo.'));
     if (state.authorized) renderDashboard();
     else renderUnauthorized();
   }
@@ -354,7 +375,7 @@ async function boot() {
   }
   const { data, error } = await state.supabase.rpc('is_support_agent');
   if (error) {
-    setFeedback(error.message);
+    setFeedback(userFacingError(error, 'No pudimos validar los permisos de tu cuenta. Probá de nuevo.'));
     state.authorized = false;
     renderUnauthorized();
     return;
@@ -381,7 +402,7 @@ if (!url || !publishableKey) {
     void boot();
   });
   state.supabase.auth.getSession().then(({ data, error }) => {
-    if (error) setFeedback(error.message);
+    if (error) setFeedback(userFacingError(error, 'No pudimos recuperar la sesión. Iniciá sesión de nuevo.'));
     state.session = data?.session ?? null;
     void boot();
   });

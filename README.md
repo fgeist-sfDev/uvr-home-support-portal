@@ -11,7 +11,16 @@ The repository is public because GitHub Pages is free for public repositories. O
    - `SUPPORT_SUPABASE_URL`
    - `SUPPORT_SUPABASE_PUBLISHABLE_KEY`
 3. In Supabase **Authentication → URL Configuration → Redirect URLs**, allow the portal's GitHub Pages URL.
-4. Ensure each agent already has a Supabase Auth account and is listed by UUID in `private.support_agents`.
+4. For each agent, first create or invite their account in Supabase **Authentication → Users**. Public signups are disabled; requesting a magic link does not create an account. After the agent accepts the invitation, authorize their UUID in the SQL Editor:
+
+   ```sql
+   insert into private.support_agents (user_id)
+   select id from auth.users
+   where lower(email) = lower('agente@ejemplo.com')
+   on conflict (user_id) do nothing;
+   ```
+
+5. The agent can then request a magic link from the portal using that same email. If the account does not exist yet, the portal explains in Spanish that an administrator must invite and authorize it. Ticket access is still enforced by Supabase RLS and the `private.support_agents` allowlist.
 
 Pushing to `main` builds and deploys the site. The workflow fails if either public Supabase variable is missing.
 
