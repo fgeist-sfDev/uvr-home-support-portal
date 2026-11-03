@@ -292,6 +292,7 @@ h2 { margin-bottom: 6px; font-size: 21px; letter-spacing: -.025em; }
   .dashboard-columns { grid-template-columns: 1fr; gap: 12px; }
   .ticket-list { max-height: 34vh; }
   .ticket-list, .detail-panel, .detail-empty { scroll-margin-top: 82px; }
+  .detail-empty { display: none; }
   .ticket-list-back { display: inline-flex; align-items: center; justify-content: center; min-height: 42px; margin: -4px 0 10px; padding: 8px 12px; border: 1px solid #e6ebe3; border-radius: 11px; background: #f7f9f5; color: #355747; font-weight: 700; }
   .ticket-list-back:hover { background: #eef4ea; }
   .detail-panel { padding: 16px; }
