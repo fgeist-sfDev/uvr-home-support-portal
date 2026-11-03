@@ -22,6 +22,7 @@ const state = {
   dashboardStats: null,
   selectedId: null,
   filter: 'open',
+  ticketSearch: '',
   page: 'overview',
   busy: false,
   error: '',
@@ -366,6 +367,8 @@ function renderAccessCheck() {
 function renderTicketRow(ticket) {
   const button = element('button', `ticket-row${ticket.id === state.selectedId ? ' selected' : ''}`);
   button.type = 'button';
+  button.dataset.ticketId = ticket.id;
+  button.setAttribute('aria-pressed', ticket.id === state.selectedId ? 'true' : 'false');
   const top = element('span', 'ticket-row-top');
   top.append(element('strong', 'ticket-subject', ticket.subject));
   top.append(element('span', `status status-${ticket.status}`, statusNames[ticket.status] || ticket.status));
@@ -393,6 +396,16 @@ function renderMessage(message) {
 
 function renderDetail(ticket) {
   const panel = element('section', 'detail-panel');
+  const backToList = element('button', 'text-button ticket-list-back', '← Volver a la lista');
+  backToList.type = 'button';
+  backToList.addEventListener('click', () => {
+    const list = app.querySelector('.ticket-list');
+    const selectedRow = [...app.querySelectorAll('.ticket-row')]
+      .find((row) => row.dataset.ticketId === ticket.id);
+    selectedRow?.focus({ preventScroll: true });
+    list?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+  panel.append(backToList);
   const header = element('header', 'detail-header');
   const title = element('div', 'detail-title');
   title.append(element('p', 'eyebrow', `${typeNames[ticket.ticket_type] || 'Ticket'} · ${ticket.client_name}`));
@@ -968,10 +981,7 @@ function renderOverview(content) {
   recentHeading.append(recentTitle);
   const allTickets = element('button', 'text-button', 'Ver todos');
   allTickets.type = 'button';
-  allTickets.addEventListener('click', () => {
-    state.page = 'tickets';
-    renderDashboard();
-  });
+  allTickets.addEventListener('click', () => navigateTo('tickets'));
   recentHeading.append(allTickets);
   recent.append(recentHeading);
   if (state.tickets.length) {
@@ -1008,6 +1018,13 @@ async function refreshDashboard() {
   await Promise.all(requests);
 }
 
+function navigateTo(page) {
+  state.page = page;
+  renderDashboard();
+  app.querySelector('.dashboard-main')?.focus({ preventScroll: true });
+  window.scrollTo(0, 0);
+}
+
 function renderDashboard() {
   if (!state.authorized) return renderUnauthorized();
   const shell = element('div', 'dashboard');
@@ -1023,27 +1040,18 @@ function renderDashboard() {
   const overview = element('button', state.page === 'overview' ? 'nav-button active' : 'nav-button', 'Resumen');
   overview.type = 'button';
   if (state.page === 'overview') overview.setAttribute('aria-current', 'page');
-  overview.addEventListener('click', () => {
-    state.page = 'overview';
-    renderDashboard();
-  });
+  overview.addEventListener('click', () => navigateTo('overview'));
   nav.append(overview);
   const tickets = element('button', state.page === 'tickets' ? 'nav-button active' : 'nav-button', 'Tickets');
   tickets.type = 'button';
   if (state.page === 'tickets') tickets.setAttribute('aria-current', 'page');
-  tickets.addEventListener('click', () => {
-    state.page = 'tickets';
-    renderDashboard();
-  });
+  tickets.addEventListener('click', () => navigateTo('tickets'));
   nav.append(tickets);
   if (state.role === 'owner') {
     const agents = element('button', state.page === 'agents' ? 'nav-button active' : 'nav-button', 'Usuarios');
     agents.type = 'button';
     if (state.page === 'agents') agents.setAttribute('aria-current', 'page');
-    agents.addEventListener('click', () => {
-      state.page = 'agents';
-      renderDashboard();
-    });
+    agents.addEventListener('click', () => navigateTo('agents'));
     nav.append(agents);
   }
   header.append(brand, nav);
@@ -1054,6 +1062,7 @@ function renderDashboard() {
   shell.append(header);
 
   const content = element('main', 'dashboard-main');
+  content.tabIndex = -1;
   if (state.role === 'owner' && state.page === 'agents') {
     renderAgentManagement(content);
     shell.append(content);
@@ -1101,30 +1110,32 @@ function renderDashboard() {
     state.filter = filter.value;
     renderDashboard();
   });
+  const search = document.createElement('input');
+  search.className = 'text-input ticket-search';
+  search.type = 'search';
+  search.name = 'ticket-search';
+  search.autocomplete = 'off';
+  search.placeholder = 'Asunto, cliente o plataforma';
+  search.setAttribute('aria-label', 'Buscar tickets');
+  search.value = state.ticketSearch;
+  search.addEventListener('input', () => {
+    state.ticketSearch = search.value;
+    renderTicketResults(list, listHeading);
+  });
   const refresh = element('button', 'secondary-button', 'Actualizar');
   refresh.addEventListener('click', loadTickets);
-  controls.append(filter, refresh);
+  controls.append(filter, search, refresh);
   toolbar.append(heading, controls);
   content.append(toolbar);
   renderFeedback(content);
 
   const columns = element('div', 'dashboard-columns');
   const list = element('aside', 'ticket-list');
-  const visible = state.filter === 'all'
-    ? state.tickets
-    : state.filter === 'unassigned'
-      ? state.tickets.filter((ticket) => !ticket.assigned_agent_id)
-      : state.tickets.filter((ticket) => ticket.status === state.filter);
-  list.append(element('div', 'list-heading', `${visible.length} ${visible.length === 1 ? 'ticket' : 'tickets'}`));
-  if (!visible.length) {
-    const emptyList = element('div', 'ticket-empty');
-    const emptyMessage = state.tickets.length
-      ? 'No hay tickets con este filtro.'
-      : 'Cuando llegue una consulta, la vas a encontrar acá.';
-    emptyList.append(element('span', 'ticket-empty-mark', '—'), element('p', 'empty', emptyMessage));
-    list.append(emptyList);
-  }
-  else visible.forEach((ticket) => list.append(renderTicketRow(ticket)));
+  list.setAttribute('aria-label', 'Bandeja de tickets');
+  const listHeading = element('div', 'list-heading');
+  listHeading.setAttribute('aria-live', 'polite');
+  listHeading.setAttribute('aria-atomic', 'true');
+  renderTicketResults(list, listHeading);
   columns.append(list);
 
   const selected = state.tickets.find((ticket) => ticket.id === state.selectedId);
@@ -1138,6 +1149,41 @@ function renderDashboard() {
   content.append(columns);
   shell.append(content);
   app.replaceChildren(shell);
+}
+
+function renderTicketResults(list, heading) {
+  const query = state.ticketSearch.trim().toLocaleLowerCase('es-AR');
+  const visible = state.tickets.filter((ticket) => {
+    const matchesFilter = state.filter === 'all'
+      || (state.filter === 'unassigned' && !ticket.assigned_agent_id)
+      || ticket.status === state.filter;
+    if (!matchesFilter || !query) return matchesFilter;
+    const assignedAgent = state.agents.find((agent) => agent.user_id === ticket.assigned_agent_id);
+    const searchable = [
+      ticket.subject,
+      ticket.client_name,
+      typeNames[ticket.ticket_type],
+      ticket.platform,
+      ticket.app_version,
+      ticket.id,
+      state.role === 'owner' ? assignedAgent?.email : '',
+    ].filter(Boolean).join(' ').toLocaleLowerCase('es-AR');
+    return searchable.includes(query);
+  });
+  heading.textContent = `${visible.length} ${visible.length === 1 ? 'ticket' : 'tickets'}`;
+  list.replaceChildren(heading);
+  if (!visible.length) {
+    const emptyList = element('div', 'ticket-empty');
+    const emptyMessage = state.tickets.length
+      ? query
+        ? 'No encontramos tickets que coincidan con tu búsqueda y filtro.'
+        : 'No hay tickets con este filtro.'
+      : 'Cuando llegue una consulta, la vas a encontrar acá.';
+    emptyList.append(element('span', 'ticket-empty-mark', '—'), element('p', 'empty', emptyMessage));
+    list.append(emptyList);
+    return;
+  }
+  visible.forEach((ticket) => list.append(renderTicketRow(ticket)));
 }
 
 async function loadTickets() {
@@ -1186,10 +1232,20 @@ async function loadMessages(ticketId) {
 }
 
 async function selectTicket(ticketId) {
+  const pageChanged = state.page !== 'tickets';
   state.selectedId = ticketId;
   state.page = 'tickets';
   state.messages = [];
   renderDashboard();
+  if (pageChanged) {
+    app.querySelector('.dashboard-main')?.focus({ preventScroll: true });
+    window.scrollTo(0, 0);
+  }
+  if (window.matchMedia('(max-width: 760px)').matches) {
+    window.requestAnimationFrame(() => {
+      app.querySelector('.detail-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }
   await loadMessages(ticketId);
 }
 
@@ -1253,6 +1309,7 @@ async function signOut() {
   state.busy = false;
   state.error = '';
   state.notice = '';
+  state.ticketSearch = '';
   state.bootRequest += 1;
   renderLogin();
 }
@@ -1371,6 +1428,7 @@ if (!url || !publishableKey) {
       state.error = '';
       state.notice = '';
       state.filter = 'open';
+      state.ticketSearch = '';
       state.page = 'overview';
     }
     state.session = session;
