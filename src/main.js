@@ -1507,6 +1507,7 @@ async function loadMessages(ticketId) {
 
 async function selectTicket(ticketId) {
   const pageChanged = state.page !== 'tickets';
+  state.selectedId = ticketId;
   state.page = 'tickets';
   state.unseenTickets = 0;
   updateDocumentTitle();
