@@ -372,7 +372,9 @@ function renderTicketRow(ticket) {
   button.append(top);
   const assignedAgent = state.agents.find((agent) => agent.user_id === ticket.assigned_agent_id);
   const assignment = state.role === 'owner'
-    ? ` · ${assignedAgent?.email || 'Sin asignar'}`
+    ? ` · ${assignedAgent
+      ? `${assignedAgent.email}${assignedAgent.removed_at ? ' · fuera del equipo' : ''}`
+      : 'Sin asignar'}`
     : '';
   button.append(element('span', 'ticket-row-meta', `${ticket.client_name} · ${typeNames[ticket.ticket_type] || 'Ayuda'}${assignment}`));
   button.append(element('span', 'ticket-row-date', formatDate(ticket.last_message_at)));
@@ -413,6 +415,14 @@ function renderDetail(ticket) {
         option.textContent = agent.email;
         assignment.append(option);
       });
+    const historicalAgent = state.agents.find((agent) => agent.user_id === ticket.assigned_agent_id && agent.removed_at);
+    if (historicalAgent) {
+      const option = document.createElement('option');
+      option.value = historicalAgent.user_id;
+      option.textContent = `${historicalAgent.email} · fuera del equipo`;
+      option.disabled = true;
+      assignment.append(option);
+    }
     assignment.value = ticket.assigned_agent_id || '';
     assignment.disabled = state.busy;
     assignment.addEventListener('change', () => assignTicket(ticket.id, assignment.value || null));
@@ -465,16 +475,47 @@ function renderDetail(ticket) {
 }
 
 function renderAgentManagement(content) {
-  const toolbar = element('div', 'toolbar');
-  const heading = element('div', '');
-  heading.append(element('p', 'eyebrow', 'ACCESO PRIVADO'), element('h1', '', 'Equipo de soporte'));
-  toolbar.append(heading);
-  content.append(toolbar);
-  content.append(element('p', 'muted', 'Solo vos podés invitar o deshabilitar agentes. Cada agente ve únicamente los tickets que le asignás y debe configurar un segundo factor.'));
+  const listedAgents = state.agents.filter((agent) => !agent.removed_at);
+  const agents = listedAgents.filter((agent) => agent.role === 'agent');
+  const activeAgents = agents.filter((agent) => agent.active);
+  const availableAgents = activeAgents.filter((agent) => agent.available);
+  const activeTickets = agents.reduce((total, agent) => total + (Number(agent.active_tickets) || 0), 0);
+
+  const hero = element('section', 'team-hero');
+  const introduction = element('div', 'team-hero-copy');
+  introduction.append(
+    element('p', 'eyebrow', 'ACCESO PRIVADO · SOLO PROPIETARIO'),
+    element('h1', '', 'Un equipo que da confianza.'),
+    element('p', '', 'Invitá a quienes van a estar del otro lado. Vos cuidás los accesos; el sistema reparte los tickets.')
+  );
+  const heroNote = element('div', 'team-hero-note');
+  heroNote.append(
+    element('span', '', 'UVR HOME · SOPORTE'),
+    element('strong', '', 'Acceso protegido'),
+    element('small', '', 'Segundo factor obligatorio')
+  );
+  hero.append(introduction, heroNote);
+  content.append(hero);
   renderFeedback(content);
 
+  const metrics = element('section', 'team-metrics');
+  metrics.append(
+    renderAgentMetric('Accesos activos', activeAgents.length, 'Personas habilitadas', 'team-metric-active'),
+    renderAgentMetric('Disponibles', availableAgents.length, 'Pueden recibir tickets', 'team-metric-ready'),
+    renderAgentMetric('En pausa', activeAgents.length - availableAgents.length, 'Sin nuevas asignaciones', 'team-metric-paused'),
+    renderAgentMetric('Casos activos', activeTickets, 'Asignados al equipo', 'team-metric-tickets')
+  );
+  content.append(metrics);
+
+  const invitePanel = element('section', 'invite-panel');
+  const inviteIntro = element('div', 'invite-intro');
+  inviteIntro.append(
+    element('p', 'eyebrow', 'CRECÉ A TU RITMO'),
+    element('h2', '', 'Sumá a alguien al equipo'),
+    element('p', 'muted', 'Si ya tiene una cuenta de UVR Home, se habilita. Si todavía no, le mandamos una invitación.')
+  );
   const form = element('form', 'invite-form');
-  const label = element('label', '', 'Agregar o invitar agente por correo');
+  const label = element('label', '', 'Correo electrónico');
   const input = element('input', 'text-input');
   input.type = 'email';
   input.name = 'email';
@@ -482,8 +523,9 @@ function renderAgentManagement(content) {
   input.required = true;
   input.maxLength = 254;
   input.placeholder = 'agente@ejemplo.com';
+  input.disabled = state.busy;
   label.append(input);
-  const submit = element('button', 'primary-button', state.busy ? 'Procesando…' : 'Agregar agente');
+  const submit = element('button', 'primary-button', state.busy ? 'Procesando…' : 'Invitar agente');
   submit.type = 'submit';
   submit.disabled = state.busy;
   form.append(label, submit);
@@ -491,6 +533,7 @@ function renderAgentManagement(content) {
     event.preventDefault();
     const email = new FormData(form).get('email')?.toString().trim();
     if (!email) return;
+    const userId = state.session?.user?.id;
     state.busy = true;
     setFeedback();
     renderDashboard();
@@ -520,34 +563,132 @@ function renderAgentManagement(content) {
     );
     await Promise.all([loadAgents(), loadDashboardStats()]);
   });
-  content.append(form);
+  invitePanel.append(inviteIntro, form);
+  content.append(invitePanel);
 
   const list = element('section', 'agent-list');
-  list.append(element('h2', '', `${state.agents.length} ${state.agents.length === 1 ? 'usuario' : 'usuarios'}`));
-  if (!state.agents.length) {
-    list.append(element('p', 'empty', 'Todavía no hay usuarios de soporte.'));
-  } else {
-    state.agents.forEach((agent) => {
-      const row = element('article', 'agent-row');
-      const details = element('div', 'agent-details');
-      details.append(
-        element('strong', '', agent.role === 'owner' ? `${agent.email} · Vos (propietario)` : agent.email),
-        element('span', 'muted', agent.role === 'owner'
-          ? 'Propietario'
-          : `${agent.active ? 'Habilitado' : 'Deshabilitado'} · ${agent.available ? 'Disponible' : 'En pausa'} · ${Number(agent.active_tickets) || 0} tickets activos`)
-      );
-      row.append(details);
-      if (agent.role === 'agent') {
-        const toggle = element('button', agent.active ? 'secondary-button' : 'primary-button', agent.active ? 'Deshabilitar' : 'Rehabilitar');
-        toggle.type = 'button';
-        toggle.disabled = state.busy;
-        toggle.addEventListener('click', () => setAgentActive(agent, !agent.active));
-        row.append(toggle);
-      }
-      list.append(row);
-    });
+  const listHeading = element('div', 'team-list-heading');
+  const listTitle = element('div', '');
+  listTitle.append(
+    element('h2', '', 'Personas con acceso'),
+    element('p', 'muted', 'Gestioná el acceso y la disponibilidad sin perder el historial.')
+  );
+  listHeading.append(listTitle, element('span', 'team-count', `${listedAgents.length} ${listedAgents.length === 1 ? 'persona' : 'personas'}`));
+  list.append(listHeading);
+  listedAgents.forEach((agent) => {
+    const owner = agent.role === 'owner';
+    const row = element('article', `agent-card${owner ? ' is-owner' : ''}${!agent.active && !owner ? ' is-disabled' : ''}`);
+    const identity = element('div', 'agent-card-identity');
+    const initials = agent.email?.split('@')[0]?.slice(0, 2).toLocaleUpperCase('es-AR') || 'UV';
+    identity.append(element('span', 'agent-card-avatar', initials));
+    const details = element('div', 'agent-card-details');
+    const name = element('strong', 'agent-email', owner ? `${agent.email} · Vos` : agent.email);
+    const meta = element('div', 'agent-card-meta');
+    meta.append(element('span', `agent-role${owner ? ' is-owner' : ''}`, owner ? 'Propietario' : 'Agente'));
+    if (!owner) {
+      const status = !agent.active ? 'Acceso deshabilitado' : agent.available ? 'Disponible' : 'En pausa';
+      meta.append(element('span', `agent-state${!agent.active ? ' is-disabled' : agent.available ? ' is-available' : ' is-paused'}`, status));
+    }
+    details.append(name, meta);
+    if (!owner) {
+      const assigned = Number(agent.active_tickets) || 0;
+      const total = Number(agent.total_tickets) || 0;
+      details.append(element(
+        'span',
+        'agent-ticket-summary',
+        `${assigned} ${assigned === 1 ? 'ticket activo' : 'tickets activos'} · ${total} asignados en total`
+      ));
+    } else {
+      details.append(element('span', 'agent-ticket-summary', 'Tu cuenta de administración'));
+    }
+    identity.append(details);
+    row.append(identity);
+    if (agent.role === 'agent') {
+      const actions = element('div', 'agent-actions');
+      const toggle = element('button', agent.active ? 'secondary-button' : 'primary-button', agent.active ? 'Deshabilitar' : 'Rehabilitar');
+      toggle.type = 'button';
+      toggle.disabled = state.busy;
+      toggle.setAttribute('aria-label', `${agent.active ? 'Deshabilitar' : 'Rehabilitar'} a ${agent.email}`);
+      toggle.addEventListener('click', () => {
+        if (agent.active) showAgentActionDialog(agent, 'disable');
+        else void setAgentActive(agent, true);
+      });
+      const remove = element('button', 'danger-button', 'Quitar');
+      remove.type = 'button';
+      remove.disabled = state.busy;
+      remove.setAttribute('aria-label', `Quitar a ${agent.email} del equipo`);
+      remove.addEventListener('click', () => showAgentActionDialog(agent, 'remove'));
+      actions.append(toggle, remove);
+      row.append(actions);
+    }
+    list.append(row);
+  });
+  if (!agents.length) {
+    const empty = element('div', 'team-empty');
+    empty.append(
+      element('span', 'team-empty-mark', '+'),
+      element('strong', '', 'Tu equipo empieza acá'),
+      element('p', 'muted', 'Cuando invites a alguien, vas a poder ver su disponibilidad y carga de trabajo en esta lista.')
+    );
+    list.append(empty);
   }
   content.append(list);
+}
+
+function renderAgentMetric(label, value, detail, accent) {
+  const card = element('article', `team-metric ${accent}`);
+  card.append(
+    element('span', 'team-metric-label', label),
+    element('strong', 'team-metric-value', Number(value || 0).toLocaleString('es-AR')),
+    element('span', 'team-metric-detail', detail)
+  );
+  return card;
+}
+
+function showAgentActionDialog(agent, action) {
+  const removing = action === 'remove';
+  const activeTickets = Number(agent.active_tickets) || 0;
+  const dialog = document.createElement('dialog');
+  dialog.className = `confirm-dialog${removing ? ' is-danger' : ''}`;
+  dialog.setAttribute('aria-labelledby', 'agent-dialog-title');
+  dialog.setAttribute('aria-describedby', 'agent-dialog-description');
+
+  const card = element('div', 'confirm-dialog-card');
+  card.append(element('span', 'confirm-dialog-icon', removing ? '−' : 'Ⅱ'));
+  card.append(element('h2', '', removing ? 'Quitar del equipo' : 'Deshabilitar acceso'));
+  const title = card.querySelector('h2');
+  title.id = 'agent-dialog-title';
+  const description = element('p', 'muted', removing
+    ? `Se va a quitar el acceso de ${agent.email} al panel. ${activeTickets
+      ? `${activeTickets} ${activeTickets === 1 ? 'ticket activo va a quedar' : 'tickets activos van a quedar'} en la cola y se reasignarán si hay alguien disponible.`
+      : 'No tiene tickets activos asignados.'} Su cuenta de UVR Home y todo el historial se conservan; podés volver a invitarlo más adelante.`
+    : `${agent.email} va a perder el acceso al panel. ${activeTickets
+      ? `${activeTickets} ${activeTickets === 1 ? 'ticket activo va a quedar' : 'tickets activos van a quedar'} en la cola y se reasignarán si hay alguien disponible.`
+      : 'No tiene tickets activos asignados.'} Su cuenta y su historial no se borran.`);
+  description.id = 'agent-dialog-description';
+  card.append(description);
+
+  const actions = element('div', 'confirm-dialog-actions');
+  const cancel = element('button', 'secondary-button', 'Volver');
+  cancel.type = 'button';
+  cancel.addEventListener('click', () => dialog.close('cancel'));
+  const confirm = element('button', removing ? 'danger-button' : 'primary-button', removing ? 'Quitar del equipo' : 'Deshabilitar');
+  confirm.type = 'button';
+  confirm.addEventListener('click', () => dialog.close(action));
+  actions.append(cancel, confirm);
+  card.append(actions);
+  dialog.append(card);
+  dialog.addEventListener('click', (event) => {
+    if (event.target === dialog) dialog.close('cancel');
+  });
+  dialog.addEventListener('close', () => {
+    const result = dialog.returnValue;
+    dialog.remove();
+    if (result === 'remove') void removeSupportAgent(agent);
+    if (result === 'disable') void setAgentActive(agent, false);
+  }, { once: true });
+  document.body.append(dialog);
+  dialog.showModal();
 }
 
 async function supportFunctionError(error) {
@@ -579,7 +720,6 @@ async function loadAgents() {
 }
 
 async function setAgentActive(agent, active) {
-  if (!active && !window.confirm(`¿Querés deshabilitar a ${agent.email}? Se le va a quitar el acceso y sus tickets quedarán sin asignar.`)) return;
   const userId = state.session?.user?.id;
   state.busy = true;
   setFeedback();
@@ -596,6 +736,26 @@ async function setAgentActive(agent, active) {
     return;
   }
   setFeedback('', active ? 'Agente habilitado.' : 'Agente deshabilitado y tickets liberados.');
+  await Promise.all([loadAgents(), loadTickets(), loadDashboardStats()]);
+}
+
+async function removeSupportAgent(agent) {
+  if (state.busy) return;
+  const userId = state.session?.user?.id;
+  state.busy = true;
+  setFeedback();
+  renderDashboard();
+  const { error } = await state.supabase.rpc('remove_support_agent', {
+    p_user_id: agent.user_id,
+  });
+  if (userId !== state.session?.user?.id) return;
+  state.busy = false;
+  if (error) {
+    setFeedback(userFacingError(error, 'No pudimos quitar el acceso de soporte. Probá de nuevo.'));
+    renderDashboard();
+    return;
+  }
+  setFeedback('', `Se quitó a ${agent.email} del equipo. La cuenta y el historial se conservaron.`);
   await Promise.all([loadAgents(), loadTickets(), loadDashboardStats()]);
 }
 
@@ -862,6 +1022,7 @@ function renderDashboard() {
   const nav = element('nav', 'header-nav');
   const overview = element('button', state.page === 'overview' ? 'nav-button active' : 'nav-button', 'Resumen');
   overview.type = 'button';
+  if (state.page === 'overview') overview.setAttribute('aria-current', 'page');
   overview.addEventListener('click', () => {
     state.page = 'overview';
     renderDashboard();
@@ -869,6 +1030,7 @@ function renderDashboard() {
   nav.append(overview);
   const tickets = element('button', state.page === 'tickets' ? 'nav-button active' : 'nav-button', 'Tickets');
   tickets.type = 'button';
+  if (state.page === 'tickets') tickets.setAttribute('aria-current', 'page');
   tickets.addEventListener('click', () => {
     state.page = 'tickets';
     renderDashboard();
@@ -877,6 +1039,7 @@ function renderDashboard() {
   if (state.role === 'owner') {
     const agents = element('button', state.page === 'agents' ? 'nav-button active' : 'nav-button', 'Usuarios');
     agents.type = 'button';
+    if (state.page === 'agents') agents.setAttribute('aria-current', 'page');
     agents.addEventListener('click', () => {
       state.page = 'agents';
       renderDashboard();
@@ -905,7 +1068,13 @@ function renderDashboard() {
   }
   const toolbar = element('div', 'toolbar');
   const heading = element('div', '');
-  heading.append(element('p', 'eyebrow', 'CENTRO DE AYUDA'), element('h1', '', 'Tickets'));
+  heading.append(
+    element('p', 'eyebrow', 'CENTRO DE AYUDA'),
+    element('h1', '', 'Tickets'),
+    element('p', 'page-subtitle', state.role === 'owner'
+      ? 'Toda la bandeja, con seguimiento y asignación del equipo.'
+      : 'Tus casos asignados y las respuestas que esperan atención.')
+  );
   const controls = element('div', 'toolbar-controls');
   const filter = document.createElement('select');
   filter.className = 'text-input filter-select';
@@ -947,7 +1116,14 @@ function renderDashboard() {
       ? state.tickets.filter((ticket) => !ticket.assigned_agent_id)
       : state.tickets.filter((ticket) => ticket.status === state.filter);
   list.append(element('div', 'list-heading', `${visible.length} ${visible.length === 1 ? 'ticket' : 'tickets'}`));
-  if (!visible.length) list.append(element('p', 'empty', 'No hay tickets en este filtro.'));
+  if (!visible.length) {
+    const emptyList = element('div', 'ticket-empty');
+    const emptyMessage = state.tickets.length
+      ? 'No hay tickets con este filtro.'
+      : 'Cuando llegue una consulta, la vas a encontrar acá.';
+    emptyList.append(element('span', 'ticket-empty-mark', '—'), element('p', 'empty', emptyMessage));
+    list.append(emptyList);
+  }
   else visible.forEach((ticket) => list.append(renderTicketRow(ticket)));
   columns.append(list);
 
