@@ -457,7 +457,6 @@ function renderAccessCheck() {
   state.messages = [];
   state.agents = [];
   state.dashboardStats = null;
-  state.selectedId = null;
   state.messageRequest += 1;
   state.ticketRequest += 1;
   state.agentRequest += 1;
@@ -1180,16 +1179,53 @@ async function refreshDashboard() {
   await Promise.all(requests);
 }
 
+function routeFromHash() {
+  const match = /^#\/(tickets|agents)(?:\/([0-9a-f-]{36}))?$/i.exec(window.location.hash);
+  if (!match) return { page: 'overview', ticketId: null };
+  return { page: match[1].toLowerCase(), ticketId: match[2] || null };
+}
+
+function routeHash() {
+  if (state.page === 'tickets') return state.selectedId ? `#/tickets/${state.selectedId}` : '#/tickets';
+  return state.page === 'agents' ? '#/agents' : '#/';
+}
+
+function syncRoute({ replace = false } = {}) {
+  const hash = routeHash();
+  if (window.location.hash === hash || (hash === '#/' && !window.location.hash)) return;
+  const target = `${window.location.pathname}${window.location.search}${hash}`;
+  if (replace) window.history.replaceState(null, '', target);
+  else window.history.pushState(null, '', target);
+}
+
+function applyRoute({ restoring = false } = {}) {
+  const route = routeFromHash();
+  state.page = route.page;
+  state.selectedId = route.ticketId;
+  // A ticket opened by link may not match the default "Abiertos" filter.
+  if (restoring && route.ticketId) state.filter = 'all';
+}
+
 function navigateTo(page) {
   state.page = page;
   if (page === 'tickets') {
     state.unseenTickets = 0;
     updateDocumentTitle();
   }
+  syncRoute();
   renderDashboard();
   app.querySelector('.dashboard-main')?.focus({ preventScroll: true });
   window.scrollTo(0, 0);
 }
+
+window.addEventListener('popstate', () => {
+  if (!state.authorized) return;
+  applyRoute();
+  if (state.role !== 'owner' && state.page === 'agents') state.page = 'overview';
+  state.messages = [];
+  renderDashboard();
+  if (state.page === 'tickets' && state.selectedId) void loadMessages(state.selectedId);
+});
 
 function renderDashboard() {
   if (!state.authorized) return renderUnauthorized();
@@ -1406,7 +1442,10 @@ async function loadTickets() {
   state.tickets = data || [];
   state.ticketTotal = count ?? state.tickets.length;
   state.ticketsLoaded = true;
-  if (state.selectedId && !state.tickets.some((ticket) => ticket.id === state.selectedId)) state.selectedId = null;
+  if (state.selectedId && !state.tickets.some((ticket) => ticket.id === state.selectedId)) {
+    state.selectedId = null;
+    syncRoute({ replace: true });
+  }
   renderDashboard();
 }
 
@@ -1546,6 +1585,7 @@ async function selectTicket(ticketId) {
   const pageChanged = state.page !== 'tickets';
   state.selectedId = ticketId;
   state.page = 'tickets';
+  syncRoute();
   state.unseenTickets = 0;
   updateDocumentTitle();
   state.messages = [];
@@ -1579,7 +1619,7 @@ async function requestAiDraft(ticketId) {
   if (userId !== state.session?.user?.id || typeof result.data?.draft !== 'string') {
     return { error: 'No pudimos armar el borrador. Podés responder a mano.' };
   }
-  return { draft: result.data.draft };
+  return { draft: result.data.draft.replace(/[ \t]+\n/g, '\n').replace(/^(\S[^\n]{0,30},)\n+/, '$1 ').trim() };
 }
 
 async function sendReply(ticketId, body) {
@@ -1728,6 +1768,8 @@ async function boot() {
   state.mfaFactorId = null;
   state.pendingMfaFactorId = null;
   state.authorized = true;
+  if (state.role !== 'owner' && state.page === 'agents') state.page = 'overview';
+  syncRoute({ replace: true });
   startPolling();
   const dashboardRequests = [loadDashboardStats()];
   if (state.role === 'owner') dashboardRequests.push(loadAgents());
@@ -1736,6 +1778,8 @@ async function boot() {
   if (requestId !== state.bootRequest) return;
   if (state.page === 'agents') return;
   await loadTickets();
+  if (requestId !== state.bootRequest) return;
+  if (state.page === 'tickets' && state.selectedId && !state.messages.length) await loadMessages(state.selectedId);
 }
 
 const url = import.meta.env.VITE_SUPABASE_URL;
@@ -1768,8 +1812,14 @@ if (!url || !publishableKey) {
       state.ticketSearch = '';
       state.page = 'overview';
       resetTicketView();
+      // Restore the route only when the page loads with a saved session, not when another person signs in.
+      if (!previousUserId && session) applyRoute({ restoring: true });
+      else if (window.location.hash.startsWith('#/')) window.history.replaceState(null, '', window.location.pathname + window.location.search);
     }
+    const sameUser = Boolean(session) && previousUserId === session.user?.id;
     state.session = session;
+    // Token refreshes and tab-focus events must not rebuild an already open dashboard.
+    if (sameUser && state.authorized) return;
     window.setTimeout(() => void boot(), 0);
   });
   state.supabase.auth.getSession().then(({ data, error }) => {

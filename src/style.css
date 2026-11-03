@@ -40,7 +40,7 @@ h2 { margin-bottom: 6px; font-size: 21px; letter-spacing: -.025em; }
 .text-input { width: 100%; min-height: 46px; padding: 11px 13px; border: 1px solid #d9ded8; border-radius: 12px; outline: none; background: #fff; color: #242927; box-shadow: 0 1px 2px #24332b08; transition: border-color .18s ease, box-shadow .18s ease; }
 .text-input:hover:not(:focus) { border-color: #c9d4c8; }
 .text-input:focus { border-color: #477a6b; box-shadow: 0 0 0 3px #477a6b1a; }
-.reply-input { resize: vertical; min-height: 96px; }
+.reply-input { resize: vertical; min-height: 110px; font-weight: 400; line-height: 1.55; }
 .primary-button, .secondary-button, .text-button { min-height: 42px; padding: 10px 16px; border: 0; border-radius: 12px; font-weight: 750; }
 .primary-button { background: linear-gradient(135deg, var(--forest), #24564a); color: #fff; box-shadow: 0 5px 12px #173d3524; }
 .primary-button:hover { background: linear-gradient(135deg, #24564a, #2e6957); box-shadow: 0 8px 18px #173d3530; }
@@ -91,11 +91,11 @@ h2 { margin-bottom: 6px; font-size: 21px; letter-spacing: -.025em; }
 .urgency-urgent { background: #fde6e1; color: #a1362a; }
 .list-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .load-more { display: grid; justify-items: center; gap: 9px; padding: 14px 6px 4px; text-align: center; }
-.ai-draft { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 10px; }
-.ai-button { min-height: 38px; padding: 8px 15px; border: 0; border-radius: 99px; background: var(--forest); color: var(--lime); font-size: 13px; font-weight: 800; }
-.ai-button:hover:not(:disabled) { background: var(--forest-deep); }
+.ai-draft { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; padding: 12px 14px; border: 1px solid #dbe8c4; border-radius: 14px; background: linear-gradient(135deg, #f6faee, #eef6e3); }
+.ai-button { min-height: 36px; padding: 7px 14px; border: 1px solid #b7cf86; border-radius: 99px; background: #fff; color: var(--forest); font-size: 13px; font-weight: 750; box-shadow: 0 1px 2px #173d3512; }
+.ai-button:hover:not(:disabled) { border-color: #8fb04e; background: #fbfdf6; }
 .ai-button:disabled { opacity: .65; cursor: wait; }
-.ai-status { flex: 1 1 220px; color: #707a75; font-size: 12px; line-height: 1.4; }
+.ai-status { flex: 1 1 200px; color: #5f6d63; font-size: 12px; line-height: 1.45; }
 .ai-status.is-error { color: #9a3b2d; font-weight: 700; }
 .quick-replies { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
 .quick-replies-label { width: 100%; color: #707a75; font-size: 12px; font-weight: 750; }
