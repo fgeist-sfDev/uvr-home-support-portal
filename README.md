@@ -1,6 +1,6 @@
 # UVR Home Support Portal
 
-Static, public-facing frontend for authorized support agents. Ticket data stays in Supabase; access is enforced by database grants, row-level security, and the `private.support_agents` allowlist.
+Static, public-facing frontend for the support team. Ticket data stays in Supabase; access is enforced by database grants, row-level security, role checks, and mandatory MFA.
 
 The repository is public because GitHub Pages is free for public repositories. Only the portal source and the Supabase publishable key are public. Never add a Supabase secret/service-role key, database password, or agent credentials.
 
@@ -11,16 +11,32 @@ The repository is public because GitHub Pages is free for public repositories. O
    - `SUPPORT_SUPABASE_URL`
    - `SUPPORT_SUPABASE_PUBLISHABLE_KEY`
 3. In Supabase **Authentication → URL Configuration → Redirect URLs**, allow the portal's GitHub Pages URL.
-4. For each agent, first create or invite their account in Supabase **Authentication → Users**. Public signups are disabled; requesting a magic link does not create an account. After the agent accepts the invitation, authorize their UUID in the SQL Editor:
+4. On the staging project only, apply migration `20261115000000_support_agent_access.sql`. Invite the owner's account in Supabase **Authentication → Users**, then add that account as the single owner in the SQL Editor:
 
    ```sql
-   insert into private.support_agents (user_id)
-   select id from auth.users
-   where lower(email) = lower('agente@ejemplo.com')
-   on conflict (user_id) do nothing;
+   do $$
+   declare
+     owner_user_id uuid;
+   begin
+     select id into owner_user_id from auth.users
+     where lower(email) = lower('dueno@ejemplo.com');
+     if owner_user_id is null then
+       raise exception 'Primero invitá la cuenta propietaria en Supabase Authentication.';
+     end if;
+     if exists (
+       select 1 from private.support_agents
+       where role = 'owner' and user_id <> owner_user_id
+     ) then
+       raise exception 'Ya existe otra cuenta propietaria.';
+     end if;
+     insert into private.support_agents (user_id, role, active)
+     values (owner_user_id, 'owner', true)
+     on conflict (user_id) do update set role = 'owner', active = true;
+   end
+   $$;
    ```
 
-5. The agent can then request a magic link from the portal using that same email. If the account does not exist yet, the portal explains in Spanish that an administrator must invite and authorize it. Ticket access is still enforced by Supabase RLS and the `private.support_agents` allowlist.
+5. Sign in with the owner's email and configure TOTP. The **Resumen** dashboard shows ticket volume, statuses, recent activity, and agent workload. Active tickets are automatically assigned to the available agent with the fewest active tickets; if nobody is available, they stay unassigned in the owner's queue. Agents can pause or resume assignment without losing their current tickets. From **Usuarios**, the owner can invite new users or add existing UVR Home accounts, and enable or disable agents. Existing accounts do not receive another invitation email; they can request a magic link after being added. From **Tickets**, the owner can override automatic assignment; agents can only see and answer tickets assigned to them. Public signups stay disabled, and requesting a magic link never creates an account.
 
 Pushing to `main` builds and deploys the site. The workflow fails if either public Supabase variable is missing.
 
