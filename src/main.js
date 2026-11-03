@@ -22,6 +22,7 @@ const state = {
   busy: false,
   error: '',
   notice: '',
+  messageRequest: 0,
 };
 
 function element(tag, className, text) {
@@ -279,12 +280,14 @@ async function loadTickets() {
 }
 
 async function loadMessages(ticketId) {
+  const requestId = ++state.messageRequest;
   const { data, error } = await state.supabase
     .from('support_ticket_messages')
     .select('id, author_role, body, created_at')
     .eq('ticket_id', ticketId)
     .order('created_at', { ascending: true })
     .limit(200);
+  if (state.selectedId !== ticketId || requestId !== state.messageRequest) return;
   if (error) {
     setFeedback(error.message);
     renderDashboard();
