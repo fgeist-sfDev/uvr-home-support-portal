@@ -158,6 +158,14 @@ function userFacingError(error, fallback) {
   if (message.includes('owner_mfa_required')) {
     return 'Solo la persona propietaria, después de validar el segundo factor, puede administrar el equipo.';
   }
+  if (message.includes('agent_mfa_required')) return 'Tenés que validar el segundo factor para usar la IA.';
+  if (message.includes('rate_limited')) return 'Pediste muchos borradores seguidos. Esperá un minuto y probá de nuevo.';
+  if (message.includes('ai_unavailable') || message.includes('not_configured')) {
+    return 'La IA no está disponible ahora. Podés responder a mano.';
+  }
+  if (message.includes('no_messages') || message.includes('ticket_not_found')) {
+    return 'Este ticket todavía no tiene mensajes para analizar.';
+  }
   if (message.includes('invalid_email')) return 'Revisá que el correo esté escrito correctamente.';
   if (message.includes('cannot_invite_owner')) return 'Tu cuenta ya es la propietaria del portal.';
   if (message.includes('support_account_registration_failed')) return 'No pudimos habilitar esa cuenta. Probá de nuevo o contactá a soporte técnico.';
@@ -563,6 +571,13 @@ function renderDetail(ticket) {
   const quick = element('div', 'quick-replies');
   quick.setAttribute('role', 'group');
   quick.setAttribute('aria-label', 'Respuestas rápidas');
+  const aiRow = element('div', 'ai-draft');
+  const aiButton = element('button', 'ai-button', '✨ Sugerir con IA');
+  aiButton.type = 'button';
+  aiButton.disabled = state.busy;
+  const aiStatus = element('span', 'ai-status', 'Arma un borrador para que lo revises. No se envía solo.');
+  aiStatus.setAttribute('role', 'status');
+  aiRow.append(aiButton, aiStatus);
   quick.append(element('span', 'quick-replies-label', 'Respuestas rápidas'));
   const label = element('label', 'reply-label', 'Respuesta');
   const textarea = document.createElement('textarea');
@@ -596,6 +611,28 @@ function renderDetail(ticket) {
     });
     quick.append(chip);
   });
+  aiButton.addEventListener('click', async () => {
+    aiButton.disabled = true;
+    aiButton.textContent = '✨ Pensando…';
+    aiStatus.classList.remove('is-error');
+    aiStatus.textContent = 'Leyendo la conversación…';
+    const result = await requestAiDraft(ticket.id);
+    aiButton.disabled = state.busy;
+    aiButton.textContent = '✨ Sugerir con IA';
+    if (result.error) {
+      aiStatus.classList.add('is-error');
+      aiStatus.textContent = result.error;
+      return;
+    }
+    const current = (state.drafts[ticket.id] || '').trim();
+    state.drafts[ticket.id] = current ? `${current}\n\n${result.draft}` : result.draft;
+    if (textarea.isConnected) {
+      textarea.value = state.drafts[ticket.id];
+      textarea.focus();
+      textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+      aiStatus.textContent = 'Borrador listo. Revisalo y completá lo que diga [completar] antes de enviar.';
+    }
+  });
   label.append(textarea);
   const footer = element('div', 'reply-footer');
   footer.append(element('span', 'fine-print', 'Al responder, el ticket pasa a “Esperamos respuesta”. Ctrl + Enter para enviar.'));
@@ -603,7 +640,7 @@ function renderDetail(ticket) {
   send.type = 'submit';
   send.disabled = state.busy;
   footer.append(send);
-  form.append(quick, label, footer);
+  form.append(aiRow, quick, label, footer);
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
     await sendReply(ticket.id, new FormData(form).get('reply')?.toString().trim());
@@ -1523,6 +1560,26 @@ async function selectTicket(ticketId) {
     });
   }
   await loadMessages(ticketId);
+}
+
+async function requestAiDraft(ticketId) {
+  const userId = state.session?.user?.id;
+  let result;
+  let error;
+  try {
+    result = await state.supabase.functions.invoke('support-draft', { body: { ticket_id: ticketId } });
+    error = result.error;
+  } catch (requestError) {
+    error = requestError;
+  }
+  if (error) {
+    const detail = await supportFunctionError(error);
+    return { error: userFacingError(detail, 'No pudimos armar el borrador. Podés responder a mano.') };
+  }
+  if (userId !== state.session?.user?.id || typeof result.data?.draft !== 'string') {
+    return { error: 'No pudimos armar el borrador. Podés responder a mano.' };
+  }
+  return { draft: result.data.draft };
 }
 
 async function sendReply(ticketId, body) {

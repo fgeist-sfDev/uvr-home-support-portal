@@ -91,6 +91,12 @@ h2 { margin-bottom: 6px; font-size: 21px; letter-spacing: -.025em; }
 .urgency-urgent { background: #fde6e1; color: #a1362a; }
 .list-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .load-more { display: grid; justify-items: center; gap: 9px; padding: 14px 6px 4px; text-align: center; }
+.ai-draft { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 10px; }
+.ai-button { min-height: 38px; padding: 8px 15px; border: 0; border-radius: 99px; background: var(--forest); color: var(--lime); font-size: 13px; font-weight: 800; }
+.ai-button:hover:not(:disabled) { background: var(--forest-deep); }
+.ai-button:disabled { opacity: .65; cursor: wait; }
+.ai-status { flex: 1 1 220px; color: #707a75; font-size: 12px; line-height: 1.4; }
+.ai-status.is-error { color: #9a3b2d; font-weight: 700; }
 .quick-replies { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
 .quick-replies-label { width: 100%; color: #707a75; font-size: 12px; font-weight: 750; }
 .quick-reply { min-height: 34px; padding: 6px 12px; border: 1px solid var(--line); border-radius: 99px; background: var(--surface-soft); color: var(--forest); font-size: 12px; font-weight: 700; }
