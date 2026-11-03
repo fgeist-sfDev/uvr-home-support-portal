@@ -11,6 +11,26 @@ const statuses = [
 ];
 const statusNames = Object.fromEntries(statuses);
 const typeNames = { support: 'Ayuda', bug: 'Error de la app' };
+const TICKET_PAGE_SIZE = 50;
+const POLL_INTERVAL_MS = 30000;
+const HOUR_MS = 3600000;
+// Horas sin respuesta del equipo antes de marcar un ticket como "con demora" o "urgente".
+const responseLimits = {
+  open: { late: 4, urgent: 24 },
+  in_progress: { late: 24, urgent: 48 },
+};
+const quickReplies = [
+  ['Recibimos tu consulta', '¡Hola! Gracias por escribirnos. Ya estamos revisando tu consulta y te respondemos a la brevedad.'],
+  ['Pedir más datos', 'Para ayudarte mejor, ¿podés contarnos qué pasos seguiste, qué esperabas que pasara y qué ves en pantalla? Si tenés una captura, mejor.'],
+  ['Actualizar la app', 'Probá actualizar la app a la última versión desde la tienda y volvé a intentar. Si el problema sigue, contanos y lo revisamos.'],
+  ['Reiniciar la app', 'Cerrá la app por completo, volvé a abrirla y probá de nuevo. Si no se soluciona, avisanos y seguimos con el caso.'],
+  ['Resuelto', '¡Listo! Dejamos resuelto el problema. Si algo más falla, respondé este mensaje y lo vemos.'],
+  ['Cierre por falta de respuesta', 'Como no tuvimos novedades, vamos a dar el ticket por resuelto. Si todavía lo necesitás, escribinos y lo reabrimos.'],
+];
+const sortOptions = [
+  ['recent', 'Más recientes'],
+  ['urgent', 'Más urgentes primero'],
+];
 const state = {
   supabase: null,
   session: null,
@@ -23,6 +43,15 @@ const state = {
   selectedId: null,
   filter: 'open',
   ticketSearch: '',
+  ticketSort: 'recent',
+  ticketLimit: TICKET_PAGE_SIZE,
+  ticketTotal: 0,
+  ticketsLoaded: false,
+  loadingMore: false,
+  drafts: {},
+  unseenTickets: 0,
+  pollTimer: null,
+  polling: false,
   page: 'overview',
   busy: false,
   error: '',
@@ -43,6 +72,70 @@ function element(tag, className, text) {
   if (className) item.className = className;
   if (text !== undefined) item.textContent = text;
   return item;
+}
+
+function formatAge(value) {
+  const minutes = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 60000));
+  if (minutes < 1) return 'ahora';
+  if (minutes < 60) return `hace ${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `hace ${hours} h`;
+  const days = Math.floor(hours / 24);
+  return `hace ${days} ${days === 1 ? 'día' : 'días'}`;
+}
+
+function ticketUrgency(ticket) {
+  const limits = responseLimits[ticket.status];
+  if (!limits || !ticket.last_message_at) return null;
+  const hours = (Date.now() - new Date(ticket.last_message_at).getTime()) / HOUR_MS;
+  if (hours >= limits.urgent) return { level: 'urgent', label: 'Urgente' };
+  if (hours >= limits.late) return { level: 'late', label: 'Con demora' };
+  return null;
+}
+
+function urgencyRank(ticket) {
+  const urgency = ticketUrgency(ticket);
+  if (urgency?.level === 'urgent') return 0;
+  if (urgency?.level === 'late') return 1;
+  return responseLimits[ticket.status] ? 2 : 3;
+}
+
+function sortTickets(list) {
+  if (state.ticketSort !== 'urgent') return list;
+  return [...list].sort((a, b) => urgencyRank(a) - urgencyRank(b)
+    || new Date(a.last_message_at) - new Date(b.last_message_at));
+}
+
+function updateDocumentTitle() {
+  document.title = `${state.unseenTickets ? `(${state.unseenTickets}) ` : ''}Soporte UVR Home`;
+}
+
+function showToast(message, actionLabel, onAction) {
+  let region = document.querySelector('.toast-region');
+  if (!region) {
+    region = element('div', 'toast-region');
+    region.setAttribute('role', 'status');
+    region.setAttribute('aria-live', 'polite');
+    document.body.append(region);
+  }
+  const toast = element('div', 'toast');
+  toast.append(element('span', '', message));
+  if (actionLabel && onAction) {
+    const action = element('button', 'toast-action', actionLabel);
+    action.type = 'button';
+    action.addEventListener('click', () => {
+      toast.remove();
+      onAction();
+    });
+    toast.append(action);
+  }
+  const close = element('button', 'toast-close', '×');
+  close.type = 'button';
+  close.setAttribute('aria-label', 'Cerrar aviso');
+  close.addEventListener('click', () => toast.remove());
+  toast.append(close);
+  region.replaceChildren(toast);
+  window.setTimeout(() => toast.remove(), 12000);
 }
 
 function formatDate(value) {
@@ -380,7 +473,11 @@ function renderTicketRow(ticket) {
       : 'Sin asignar'}`
     : '';
   button.append(element('span', 'ticket-row-meta', `${ticket.client_name} · ${typeNames[ticket.ticket_type] || 'Ayuda'}${assignment}`));
-  button.append(element('span', 'ticket-row-date', formatDate(ticket.last_message_at)));
+  const footer = element('span', 'ticket-row-footer');
+  footer.append(element('span', 'ticket-row-date', `${formatDate(ticket.last_message_at)} · ${formatAge(ticket.last_message_at)}`));
+  const urgency = ticketUrgency(ticket);
+  if (urgency) footer.append(element('span', `urgency urgency-${urgency.level}`, urgency.label));
+  button.append(footer);
   button.addEventListener('click', () => selectTicket(ticket.id));
   return button;
 }
@@ -463,6 +560,10 @@ function renderDetail(ticket) {
   panel.append(thread);
 
   const form = element('form', 'reply-form');
+  const quick = element('div', 'quick-replies');
+  quick.setAttribute('role', 'group');
+  quick.setAttribute('aria-label', 'Respuestas rápidas');
+  quick.append(element('span', 'quick-replies-label', 'Respuestas rápidas'));
   const label = element('label', 'reply-label', 'Respuesta');
   const textarea = document.createElement('textarea');
   textarea.className = 'text-input reply-input';
@@ -471,14 +572,38 @@ function renderDetail(ticket) {
   textarea.maxLength = 4000;
   textarea.required = true;
   textarea.placeholder = 'Escribile al usuario…';
+  textarea.value = state.drafts[ticket.id] || '';
+  textarea.addEventListener('input', () => {
+    if (textarea.value) state.drafts[ticket.id] = textarea.value;
+    else delete state.drafts[ticket.id];
+  });
+  textarea.addEventListener('keydown', (event) => {
+    if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+      event.preventDefault();
+      form.requestSubmit();
+    }
+  });
+  quickReplies.forEach(([name, text]) => {
+    const chip = element('button', 'quick-reply', name);
+    chip.type = 'button';
+    chip.disabled = state.busy;
+    chip.addEventListener('click', () => {
+      const current = textarea.value.trim();
+      textarea.value = current ? `${current}\n\n${text}` : text;
+      textarea.dispatchEvent(new Event('input'));
+      textarea.focus();
+      textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+    });
+    quick.append(chip);
+  });
   label.append(textarea);
   const footer = element('div', 'reply-footer');
-  footer.append(element('span', 'fine-print', 'Al responder, el ticket pasa a “Esperamos respuesta”.'));
+  footer.append(element('span', 'fine-print', 'Al responder, el ticket pasa a “Esperamos respuesta”. Ctrl + Enter para enviar.'));
   const send = element('button', 'primary-button', state.busy ? 'Enviando…' : 'Enviar respuesta');
   send.type = 'submit';
   send.disabled = state.busy;
   footer.append(send);
-  form.append(label, footer);
+  form.append(quick, label, footer);
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
     await sendReply(ticket.id, new FormData(form).get('reply')?.toString().trim());
@@ -1020,6 +1145,10 @@ async function refreshDashboard() {
 
 function navigateTo(page) {
   state.page = page;
+  if (page === 'tickets') {
+    state.unseenTickets = 0;
+    updateDocumentTitle();
+  }
   renderDashboard();
   app.querySelector('.dashboard-main')?.focus({ preventScroll: true });
   window.scrollTo(0, 0);
@@ -1044,6 +1173,11 @@ function renderDashboard() {
   nav.append(overview);
   const tickets = element('button', state.page === 'tickets' ? 'nav-button active' : 'nav-button', 'Tickets');
   tickets.type = 'button';
+  const openCount = Number(state.dashboardStats?.open || 0);
+  if (openCount) {
+    tickets.append(element('span', 'nav-badge', openCount > 99 ? '99+' : String(openCount)));
+    tickets.setAttribute('aria-label', `Tickets, ${openCount} ${openCount === 1 ? 'abierto' : 'abiertos'}`);
+  }
   if (state.page === 'tickets') tickets.setAttribute('aria-current', 'page');
   tickets.addEventListener('click', () => navigateTo('tickets'));
   nav.append(tickets);
@@ -1122,9 +1256,23 @@ function renderDashboard() {
     state.ticketSearch = search.value;
     renderTicketResults(list, listHeading);
   });
+  const sort = document.createElement('select');
+  sort.className = 'text-input filter-select';
+  sort.setAttribute('aria-label', 'Ordenar tickets');
+  sortOptions.forEach(([value, label]) => {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = label;
+    sort.append(option);
+  });
+  sort.value = state.ticketSort;
+  sort.addEventListener('change', () => {
+    state.ticketSort = sort.value;
+    renderDashboard();
+  });
   const refresh = element('button', 'secondary-button', 'Actualizar');
   refresh.addEventListener('click', loadTickets);
-  controls.append(filter, search, refresh);
+  controls.append(filter, sort, search, refresh);
   toolbar.append(heading, controls);
   content.append(toolbar);
   renderFeedback(content);
@@ -1170,7 +1318,10 @@ function renderTicketResults(list, heading) {
     ].filter(Boolean).join(' ').toLocaleLowerCase('es-AR');
     return searchable.includes(query);
   });
-  heading.textContent = `${visible.length} ${visible.length === 1 ? 'ticket' : 'tickets'}`;
+  const sorted = sortTickets(visible);
+  const lateCount = visible.filter((ticket) => ticketUrgency(ticket)).length;
+  heading.replaceChildren(element('span', '', `${visible.length} ${visible.length === 1 ? 'ticket' : 'tickets'}`));
+  if (lateCount) heading.append(element('span', 'urgency urgency-late', `${lateCount} con demora`));
   list.replaceChildren(heading);
   if (!visible.length) {
     const emptyList = element('div', 'ticket-empty');
@@ -1181,20 +1332,34 @@ function renderTicketResults(list, heading) {
       : 'Cuando llegue una consulta, la vas a encontrar acá.';
     emptyList.append(element('span', 'ticket-empty-mark', '—'), element('p', 'empty', emptyMessage));
     list.append(emptyList);
-    return;
+  } else {
+    sorted.forEach((ticket) => list.append(renderTicketRow(ticket)));
   }
-  visible.forEach((ticket) => list.append(renderTicketRow(ticket)));
+  if (state.tickets.length < state.ticketTotal) {
+    const more = element('div', 'load-more');
+    more.append(element('span', 'fine-print', `Mostrando ${state.tickets.length} de ${state.ticketTotal} tickets${query || state.filter !== 'all' ? ' · filtros y búsqueda aplican a los cargados' : ''}`));
+    const button = element('button', 'secondary-button', state.loadingMore ? 'Cargando…' : 'Cargar más');
+    button.type = 'button';
+    button.disabled = state.loadingMore;
+    button.addEventListener('click', loadMoreTickets);
+    more.append(button);
+    list.append(more);
+  }
+}
+
+async function fetchTicketPage(limit) {
+  return state.supabase
+    .from('support_tickets')
+    .select('id, user_id, assigned_agent_id, client_name, ticket_type, subject, status, app_version, platform, created_at, updated_at, last_message_at', { count: 'exact' })
+    .order('last_message_at', { ascending: false })
+    .range(0, limit - 1);
 }
 
 async function loadTickets() {
   if (!state.authorized) return;
   const requestId = ++state.ticketRequest;
   const userId = state.session?.user?.id;
-  const { data, error } = await state.supabase
-    .from('support_tickets')
-    .select('id, user_id, assigned_agent_id, client_name, ticket_type, subject, status, app_version, platform, created_at, updated_at, last_message_at')
-    .order('last_message_at', { ascending: false })
-    .limit(200);
+  const { data, count, error } = await fetchTicketPage(state.ticketLimit);
   if (requestId !== state.ticketRequest || userId !== state.session?.user?.id || !state.authorized) return;
   if (error) {
     setFeedback(userFacingError(error, 'No pudimos cargar los tickets. Probá de nuevo.'));
@@ -1202,9 +1367,118 @@ async function loadTickets() {
     return;
   }
   state.tickets = data || [];
+  state.ticketTotal = count ?? state.tickets.length;
+  state.ticketsLoaded = true;
   if (state.selectedId && !state.tickets.some((ticket) => ticket.id === state.selectedId)) state.selectedId = null;
   renderDashboard();
 }
+
+async function loadMoreTickets() {
+  if (state.loadingMore) return;
+  state.loadingMore = true;
+  state.ticketLimit += TICKET_PAGE_SIZE;
+  renderDashboard();
+  try {
+    await loadTickets();
+  } finally {
+    state.loadingMore = false;
+    if (state.authorized) renderDashboard();
+  }
+}
+
+function isTypingInApp() {
+  const active = document.activeElement;
+  return Boolean(active && app.contains(active) && ['INPUT', 'TEXTAREA', 'SELECT'].includes(active.tagName));
+}
+
+async function pollSupport() {
+  if (!state.authorized || state.polling || state.busy || document.hidden || state.page === 'agents') return;
+  state.polling = true;
+  const userId = state.session?.user?.id;
+  const previous = new Map(state.tickets.map((ticket) => [ticket.id, ticket]));
+  const previousLatest = state.tickets.reduce((latest, ticket) => Math.max(latest, new Date(ticket.created_at).getTime()), 0);
+  try {
+    const [page, stats] = await Promise.all([
+      fetchTicketPage(state.ticketLimit),
+      state.supabase.rpc('support_dashboard_stats'),
+    ]);
+    if (userId !== state.session?.user?.id || !state.authorized || state.busy) return;
+    if (page.error) return;
+    const tickets = page.data || [];
+    if (!stats.error) state.dashboardStats = stats.data;
+    const fresh = state.ticketsLoaded
+      ? tickets.filter((ticket) => !previous.has(ticket.id)
+        && (state.role === 'agent' || new Date(ticket.created_at).getTime() > previousLatest))
+      : [];
+    const replies = state.ticketsLoaded
+      ? tickets.filter((ticket) => {
+        const before = previous.get(ticket.id);
+        return before && ticket.status === 'open' && before.last_message_at !== ticket.last_message_at;
+      })
+      : [];
+    const selectedChanged = Boolean(state.selectedId) && tickets.some((ticket) => ticket.id === state.selectedId
+      && previous.get(ticket.id)?.last_message_at !== ticket.last_message_at);
+    state.tickets = tickets;
+    state.ticketTotal = page.count ?? tickets.length;
+    state.ticketsLoaded = true;
+    if (state.selectedId && !tickets.some((ticket) => ticket.id === state.selectedId)) state.selectedId = null;
+    if (selectedChanged) {
+      const { data: messages, error } = await state.supabase
+        .from('support_ticket_messages')
+        .select('id, author_role, body, created_at')
+        .eq('ticket_id', state.selectedId)
+        .order('created_at', { ascending: true })
+        .limit(200);
+      if (!error && userId === state.session?.user?.id) state.messages = messages || [];
+    }
+    if (fresh.length || replies.length) {
+      state.unseenTickets += fresh.length + replies.length;
+      updateDocumentTitle();
+      const parts = [];
+      if (fresh.length) parts.push(`${fresh.length} ${fresh.length === 1 ? 'ticket nuevo' : 'tickets nuevos'}`);
+      if (replies.length) parts.push(`${replies.length} ${replies.length === 1 ? 'respuesta de usuario' : 'respuestas de usuarios'}`);
+      showToast(parts.join(' · '), state.page === 'tickets' ? '' : 'Ver tickets', () => {
+        state.filter = 'open';
+        state.ticketSort = 'urgent';
+        navigateTo('tickets');
+      });
+    }
+    const list = app.querySelector('.ticket-list');
+    if (isTypingInApp() && list && state.page === 'tickets') {
+      renderTicketResults(list, list.querySelector('.list-heading') || element('div', 'list-heading'));
+    } else if (!isTypingInApp()) {
+      renderDashboard();
+    }
+  } finally {
+    state.polling = false;
+  }
+}
+
+function startPolling() {
+  if (state.pollTimer) return;
+  state.pollTimer = window.setInterval(() => void pollSupport(), POLL_INTERVAL_MS);
+}
+
+function stopPolling() {
+  if (state.pollTimer) window.clearInterval(state.pollTimer);
+  state.pollTimer = null;
+  state.unseenTickets = 0;
+  updateDocumentTitle();
+}
+
+function resetTicketView() {
+  stopPolling();
+  state.ticketSort = 'recent';
+  state.ticketLimit = TICKET_PAGE_SIZE;
+  state.ticketTotal = 0;
+  state.ticketsLoaded = false;
+  state.loadingMore = false;
+  state.drafts = {};
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) void pollSupport();
+});
 
 async function loadMessages(ticketId) {
   if (!state.authorized) return;
@@ -1233,8 +1507,9 @@ async function loadMessages(ticketId) {
 
 async function selectTicket(ticketId) {
   const pageChanged = state.page !== 'tickets';
-  state.selectedId = ticketId;
   state.page = 'tickets';
+  state.unseenTickets = 0;
+  updateDocumentTitle();
   state.messages = [];
   renderDashboard();
   if (pageChanged) {
@@ -1267,6 +1542,7 @@ async function sendReply(ticketId, body) {
     return;
   }
   setFeedback('', 'Respuesta enviada.');
+  delete state.drafts[ticketId];
   await Promise.all([loadTickets(), loadMessages(ticketId), loadDashboardStats()]);
 }
 
@@ -1310,6 +1586,7 @@ async function signOut() {
   state.error = '';
   state.notice = '';
   state.ticketSearch = '';
+  resetTicketView();
   state.bootRequest += 1;
   renderLogin();
 }
@@ -1327,6 +1604,7 @@ async function boot() {
     state.ticketRequest += 1;
     state.agentRequest += 1;
     state.statsRequest += 1;
+    stopPolling();
     renderLogin();
     return;
   }
@@ -1392,6 +1670,7 @@ async function boot() {
   state.mfaFactorId = null;
   state.pendingMfaFactorId = null;
   state.authorized = true;
+  startPolling();
   const dashboardRequests = [loadDashboardStats()];
   if (state.role === 'owner') dashboardRequests.push(loadAgents());
   else state.agents = [];
@@ -1430,6 +1709,7 @@ if (!url || !publishableKey) {
       state.filter = 'open';
       state.ticketSearch = '';
       state.page = 'overview';
+      resetTicketView();
     }
     state.session = session;
     window.setTimeout(() => void boot(), 0);

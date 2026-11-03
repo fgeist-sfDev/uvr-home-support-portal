@@ -84,7 +84,23 @@ h2 { margin-bottom: 6px; font-size: 21px; letter-spacing: -.025em; }
 .ticket-row-top { display: flex; align-items: start; justify-content: space-between; gap: 10px; }
 .ticket-subject { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; font-size: 14px; }
 .ticket-row-meta, .ticket-row-date, .ticket-context { color: #748079; font-size: 12px; }
+.ticket-row-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
 .ticket-row-date { justify-self: end; }
+.urgency { flex: 0 0 auto; padding: 3px 8px; border-radius: 99px; font-size: 10px; font-weight: 800; }
+.urgency-late { background: #fff2d6; color: #875a18; }
+.urgency-urgent { background: #fde6e1; color: #a1362a; }
+.list-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.load-more { display: grid; justify-items: center; gap: 9px; padding: 14px 6px 4px; text-align: center; }
+.quick-replies { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
+.quick-replies-label { width: 100%; color: #707a75; font-size: 12px; font-weight: 750; }
+.quick-reply { min-height: 34px; padding: 6px 12px; border: 1px solid var(--line); border-radius: 99px; background: var(--surface-soft); color: var(--forest); font-size: 12px; font-weight: 700; }
+.quick-reply:hover:not(:disabled) { border-color: #b7c9a8; background: #eef5e8; }
+.quick-reply:disabled { opacity: .55; }
+.nav-badge { min-width: 20px; margin-left: 7px; padding: 2px 6px; border-radius: 99px; background: var(--forest); color: var(--lime); font-size: 11px; font-weight: 800; line-height: 1.3; text-align: center; }
+.toast-region { position: fixed; right: 18px; bottom: 18px; z-index: 50; display: grid; gap: 8px; max-width: calc(100vw - 36px); }
+.toast { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 14px; background: var(--forest-deep); color: #fff; box-shadow: 0 14px 36px #10241d40; font-size: 13px; font-weight: 700; }
+.toast-action { padding: 6px 11px; border: 0; border-radius: 99px; background: var(--lime); color: var(--forest-deep); font-size: 12px; font-weight: 800; }
+.toast-close { border: 0; background: transparent; color: #ffffffb3; font-size: 18px; line-height: 1; }
 .ticket-empty { display: grid; justify-items: center; gap: 7px; padding: 22px 10px; text-align: center; }
 .ticket-empty-mark { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 12px; background: #f0f3ed; color: #738178; font-weight: 800; }
 .ticket-empty .empty { max-width: 220px; padding: 0; line-height: 1.5; }
