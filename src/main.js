@@ -28,8 +28,15 @@ const quickReplies = [
   ['Cierre por falta de respuesta', 'Como no tuvimos novedades, vamos a dar el ticket por resuelto. Si todavía lo necesitás, escribinos y lo reabrimos.'],
 ];
 const sortOptions = [
-  ['recent', 'Más recientes'],
-  ['urgent', 'Más urgentes primero'],
+  ['recent', 'Recientes'],
+  ['urgent', 'Urgentes primero'],
+];
+const ticketFilters = [
+  ['open', 'Abiertos'],
+  ['in_progress', 'En revisión'],
+  ['waiting_on_user', 'Esperando'],
+  ['resolved', 'Resueltos'],
+  ['closed', 'Cerrados'],
 ];
 const state = {
   supabase: null,
@@ -72,6 +79,18 @@ function element(tag, className, text) {
   if (className) item.className = className;
   if (text !== undefined) item.textContent = text;
   return item;
+}
+
+function initials(name) {
+  const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return '?';
+  return (parts[0][0] + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toLocaleUpperCase('es-AR');
+}
+
+function renderAvatar(name) {
+  let tone = 0;
+  for (const char of String(name || '')) tone = (tone * 31 + char.charCodeAt(0)) % 5;
+  return element('span', `avatar tone-${tone}`, initials(name));
 }
 
 function formatAge(value) {
@@ -469,22 +488,24 @@ function renderTicketRow(ticket) {
   button.type = 'button';
   button.dataset.ticketId = ticket.id;
   button.setAttribute('aria-pressed', ticket.id === state.selectedId ? 'true' : 'false');
+  const body = element('span', 'ticket-row-body');
   const top = element('span', 'ticket-row-top');
-  top.append(element('strong', 'ticket-subject', ticket.subject));
-  top.append(element('span', `status status-${ticket.status}`, statusNames[ticket.status] || ticket.status));
-  button.append(top);
-  const assignedAgent = state.agents.find((agent) => agent.user_id === ticket.assigned_agent_id);
-  const assignment = state.role === 'owner'
-    ? ` · ${assignedAgent
-      ? `${assignedAgent.email}${assignedAgent.removed_at ? ' · fuera del equipo' : ''}`
-      : 'Sin asignar'}`
-    : '';
-  button.append(element('span', 'ticket-row-meta', `${ticket.client_name} · ${typeNames[ticket.ticket_type] || 'Ayuda'}${assignment}`));
-  const footer = element('span', 'ticket-row-footer');
-  footer.append(element('span', 'ticket-row-date', `${formatDate(ticket.last_message_at)} · ${formatAge(ticket.last_message_at)}`));
+  top.append(element('strong', 'ticket-client', ticket.client_name));
+  top.append(element('time', 'ticket-row-time', formatAge(ticket.last_message_at)));
+  body.append(top, element('span', 'ticket-subject', ticket.subject));
+  const meta = element('span', 'ticket-row-meta');
+  meta.append(element('span', `status status-${ticket.status}`, statusNames[ticket.status] || ticket.status));
   const urgency = ticketUrgency(ticket);
-  if (urgency) footer.append(element('span', `urgency urgency-${urgency.level}`, urgency.label));
-  button.append(footer);
+  if (urgency) meta.append(element('span', `urgency urgency-${urgency.level}`, urgency.label));
+  meta.append(element('span', '', typeNames[ticket.ticket_type] || 'Ayuda'));
+  if (state.role === 'owner') {
+    const assignedAgent = state.agents.find((agent) => agent.user_id === ticket.assigned_agent_id);
+    meta.append(element('span', 'ticket-row-agent', assignedAgent
+      ? `${assignedAgent.email}${assignedAgent.removed_at ? ' · fuera del equipo' : ''}`
+      : 'Sin asignar'));
+  }
+  body.append(meta);
+  button.append(renderAvatar(ticket.client_name), body);
   button.addEventListener('click', () => selectTicket(ticket.id));
   return button;
 }
@@ -500,21 +521,16 @@ function renderMessage(message) {
 
 function renderDetail(ticket) {
   const panel = element('section', 'detail-panel');
-  const backToList = element('button', 'text-button ticket-list-back', '← Volver a la lista');
+  const header = element('header', 'detail-bar');
+  const backToList = element('button', 'detail-back', '‹');
   backToList.type = 'button';
-  backToList.addEventListener('click', () => {
-    const list = app.querySelector('.ticket-list');
-    const selectedRow = [...app.querySelectorAll('.ticket-row')]
-      .find((row) => row.dataset.ticketId === ticket.id);
-    selectedRow?.focus({ preventScroll: true });
-    list?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  });
-  panel.append(backToList);
-  const header = element('header', 'detail-header');
+  backToList.setAttribute('aria-label', 'Volver a la lista de tickets');
+  backToList.addEventListener('click', closeTicket);
   const title = element('div', 'detail-title');
-  title.append(element('p', 'eyebrow', `${typeNames[ticket.ticket_type] || 'Ticket'} · ${ticket.client_name}`));
-  title.append(element('h2', '', ticket.subject));
-  title.append(element('p', 'ticket-context', `App ${ticket.app_version || '—'} · ${ticket.platform} · ${formatDate(ticket.created_at)}`));
+  const titleText = element('div', 'detail-title-text');
+  titleText.append(element('h2', '', ticket.subject));
+  titleText.append(element('p', 'ticket-context', `${ticket.client_name} · ${typeNames[ticket.ticket_type] || 'Ayuda'} · App ${ticket.app_version || '—'} · ${ticket.platform} · ${formatDate(ticket.created_at)}`));
+  title.append(renderAvatar(ticket.client_name), titleText);
   const controls = element('div', 'ticket-controls');
   if (state.role === 'owner') {
     const assignment = document.createElement('select');
@@ -558,27 +574,24 @@ function renderDetail(ticket) {
   status.disabled = state.busy;
   status.addEventListener('change', () => updateStatus(ticket.id, status.value));
   controls.append(status);
-  header.append(title, controls);
+  header.append(backToList, title, controls);
   panel.append(header);
 
   const thread = element('div', 'thread');
+  thread.dataset.ticketId = ticket.id;
   state.messages.forEach((message) => thread.append(renderMessage(message)));
-  if (!state.messages.length) thread.append(element('p', 'muted', 'Todavía no hay mensajes.'));
+  if (!state.messages.length) thread.append(element('p', 'muted thread-empty', 'Todavía no hay mensajes.'));
   panel.append(thread);
 
   const form = element('form', 'reply-form');
   const quick = element('div', 'quick-replies');
   quick.setAttribute('role', 'group');
   quick.setAttribute('aria-label', 'Respuestas rápidas');
-  const aiRow = element('div', 'ai-draft');
-  const aiButton = element('button', 'ai-button', '✨ Sugerir con IA');
+  const aiButton = element('button', 'ai-button', '✨ Sugerir respuesta');
   aiButton.type = 'button';
   aiButton.disabled = state.busy;
-  const aiStatus = element('span', 'ai-status', 'Arma un borrador para que lo revises. No se envía solo.');
+  const aiStatus = element('span', 'ai-status', 'La IA arma un borrador para que lo revises. No se envía sola.');
   aiStatus.setAttribute('role', 'status');
-  aiRow.append(aiButton, aiStatus);
-  quick.append(element('span', 'quick-replies-label', 'Respuestas rápidas'));
-  const label = element('label', 'reply-label', 'Respuesta');
   const textarea = document.createElement('textarea');
   textarea.className = 'text-input reply-input';
   textarea.name = 'reply';
@@ -586,6 +599,7 @@ function renderDetail(ticket) {
   textarea.maxLength = 4000;
   textarea.required = true;
   textarea.placeholder = 'Escribile al usuario…';
+  textarea.setAttribute('aria-label', 'Respuesta');
   textarea.value = state.drafts[ticket.id] || '';
   textarea.addEventListener('input', () => {
     if (textarea.value) state.drafts[ticket.id] = textarea.value;
@@ -612,12 +626,14 @@ function renderDetail(ticket) {
   });
   aiButton.addEventListener('click', async () => {
     aiButton.disabled = true;
+    aiButton.classList.add('is-thinking');
     aiButton.textContent = '✨ Pensando…';
     aiStatus.classList.remove('is-error');
     aiStatus.textContent = 'Leyendo la conversación…';
     const result = await requestAiDraft(ticket.id);
     aiButton.disabled = state.busy;
-    aiButton.textContent = '✨ Sugerir con IA';
+    aiButton.classList.remove('is-thinking');
+    aiButton.textContent = '✨ Sugerir respuesta';
     if (result.error) {
       aiStatus.classList.add('is-error');
       aiStatus.textContent = result.error;
@@ -632,14 +648,13 @@ function renderDetail(ticket) {
       aiStatus.textContent = 'Borrador listo. Revisalo y completá lo que diga [completar] antes de enviar.';
     }
   });
-  label.append(textarea);
-  const footer = element('div', 'reply-footer');
-  footer.append(element('span', 'fine-print', 'Al responder, el ticket pasa a “Esperamos respuesta”. Ctrl + Enter para enviar.'));
-  const send = element('button', 'primary-button', state.busy ? 'Enviando…' : 'Enviar respuesta');
+  const bar = element('div', 'composer-bar');
+  const send = element('button', 'primary-button send-button', state.busy ? 'Enviando…' : 'Enviar');
   send.type = 'submit';
   send.disabled = state.busy;
-  footer.append(send);
-  form.append(aiRow, quick, label, footer);
+  bar.append(aiButton, aiStatus, send);
+  const hint = element('span', 'fine-print reply-hint', 'Al responder, el ticket pasa a “Esperamos respuesta”. Ctrl + Enter para enviar.');
+  form.append(quick, textarea, bar, hint);
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
     await sendReply(ticket.id, new FormData(form).get('reply')?.toString().trim());
@@ -1194,8 +1209,24 @@ function syncRoute({ replace = false } = {}) {
   const hash = routeHash();
   if (window.location.hash === hash || (hash === '#/' && !window.location.hash)) return;
   const target = `${window.location.pathname}${window.location.search}${hash}`;
-  if (replace) window.history.replaceState(null, '', target);
-  else window.history.pushState(null, '', target);
+  const from = routeFromHash();
+  const openingFromList = from.page === 'tickets' && !from.ticketId && hash.startsWith('#/tickets/');
+  const switchingTicket = from.page === 'tickets' && Boolean(from.ticketId) && hash.startsWith('#/tickets/');
+  if (replace || switchingTicket) window.history.replaceState(window.history.state, '', target);
+  else window.history.pushState(openingFromList ? { fromList: true } : null, '', target);
+}
+
+function closeTicket() {
+  state.messageRequest += 1;
+  // Si el ticket se abrió desde la lista, volvemos en el historial para que "atrás" no lo reabra.
+  if (window.history.state?.fromList) {
+    window.history.back();
+    return;
+  }
+  state.selectedId = null;
+  state.messages = [];
+  syncRoute({ replace: true });
+  renderDashboard();
 }
 
 function applyRoute({ restoring = false } = {}) {
@@ -1229,7 +1260,7 @@ window.addEventListener('popstate', () => {
 
 function renderDashboard() {
   if (!state.authorized) return renderUnauthorized();
-  const shell = element('div', 'dashboard');
+  const shell = element('div', state.page === 'tickets' ? 'dashboard is-inbox' : 'dashboard');
   const header = element('header', 'app-header');
   const brand = element('div', 'header-brand');
   brand.append(element('div', 'brand-mark small-mark', 'UVR'));
@@ -1282,86 +1313,69 @@ function renderDashboard() {
     app.replaceChildren(shell);
     return;
   }
-  const toolbar = element('div', 'toolbar');
-  const heading = element('div', '');
-  heading.append(
-    element('p', 'eyebrow', 'CENTRO DE AYUDA'),
-    element('h1', '', 'Tickets'),
-    element('p', 'page-subtitle', state.role === 'owner'
-      ? 'Toda la bandeja, con seguimiento y asignación del equipo.'
-      : 'Tus casos asignados y las respuestas que esperan atención.')
-  );
-  const controls = element('div', 'toolbar-controls');
-  const filter = document.createElement('select');
-  filter.className = 'text-input filter-select';
-  filter.setAttribute('aria-label', 'Filtrar por estado');
-  const filters = [
-    ['open', 'Abiertos'],
-    ['in_progress', 'En revisión'],
-    ['waiting_on_user', 'Esperando usuario'],
-    ['resolved', 'Resueltos'],
-    ['closed', 'Cerrados'],
-  ];
-  if (state.role === 'owner') filters.push(['unassigned', 'Sin asignar']);
-  filters.push(['all', 'Todos']);
-  filters.forEach(
-    ([value, label]) => {
-      const option = document.createElement('option');
-      option.value = value;
-      option.textContent = label;
-      filter.append(option);
-    }
-  );
-  filter.value = state.filter;
-  filter.addEventListener('change', () => {
-    state.filter = filter.value;
-    renderDashboard();
-  });
+  content.classList.add('is-inbox');
+  content.append(element('h1', 'sr-only', 'Tickets'));
+  renderFeedback(content);
+
+  const columns = element('div', 'dashboard-columns');
+  const listPanel = element('aside', 'list-panel');
+  const tools = element('div', 'list-tools');
+  const searchRow = element('div', 'search-row');
   const search = document.createElement('input');
   search.className = 'text-input ticket-search';
   search.type = 'search';
   search.name = 'ticket-search';
   search.autocomplete = 'off';
-  search.placeholder = 'Asunto, cliente o plataforma';
+  search.placeholder = 'Buscar por asunto o cliente';
   search.setAttribute('aria-label', 'Buscar tickets');
   search.value = state.ticketSearch;
   search.addEventListener('input', () => {
     state.ticketSearch = search.value;
     renderTicketResults(list, listHeading);
   });
-  const sort = document.createElement('select');
-  sort.className = 'text-input filter-select';
-  sort.setAttribute('aria-label', 'Ordenar tickets');
-  sortOptions.forEach(([value, label]) => {
-    const option = document.createElement('option');
-    option.value = value;
-    option.textContent = label;
-    sort.append(option);
-  });
-  sort.value = state.ticketSort;
-  sort.addEventListener('change', () => {
-    state.ticketSort = sort.value;
-    renderDashboard();
-  });
-  const refresh = element('button', 'secondary-button', 'Actualizar');
+  const refresh = element('button', 'icon-button', '↻');
+  refresh.type = 'button';
+  refresh.setAttribute('aria-label', 'Actualizar tickets');
+  refresh.title = 'Actualizar';
   refresh.addEventListener('click', loadTickets);
-  controls.append(filter, sort, search, refresh);
-  toolbar.append(heading, controls);
-  content.append(toolbar);
-  renderFeedback(content);
+  searchRow.append(search, refresh);
 
-  const columns = element('div', 'dashboard-columns');
-  const list = element('aside', 'ticket-list');
+  const pills = element('div', 'filter-pills');
+  pills.setAttribute('role', 'group');
+  pills.setAttribute('aria-label', 'Filtrar por estado');
+  const pillOptions = [...ticketFilters];
+  if (state.role === 'owner') pillOptions.push(['unassigned', 'Sin asignar']);
+  pillOptions.push(['all', 'Todos']);
+  pillOptions.forEach(([value, label]) => {
+    const count = value === 'all'
+      ? state.tickets.length
+      : state.tickets.filter((ticket) => (value === 'unassigned' ? !ticket.assigned_agent_id : ticket.status === value)).length;
+    const pill = element('button', 'pill', label);
+    pill.type = 'button';
+    pill.setAttribute('aria-pressed', state.filter === value ? 'true' : 'false');
+    if (count) pill.append(element('span', 'pill-count', String(count)));
+    pill.addEventListener('click', () => {
+      state.filter = value;
+      renderDashboard();
+    });
+    pills.append(pill);
+  });
+  tools.append(searchRow, pills);
+
+  const list = element('div', 'ticket-list');
   list.setAttribute('aria-label', 'Bandeja de tickets');
   const listHeading = element('div', 'list-heading');
   listHeading.setAttribute('aria-live', 'polite');
   listHeading.setAttribute('aria-atomic', 'true');
   renderTicketResults(list, listHeading);
-  columns.append(list);
+  listPanel.append(tools, list);
+  columns.append(listPanel);
 
   const selected = state.tickets.find((ticket) => ticket.id === state.selectedId);
-  if (selected) columns.append(renderDetail(selected));
-  else {
+  if (selected) {
+    shell.classList.add('has-ticket');
+    columns.append(renderDetail(selected));
+  } else {
     const empty = element('section', 'detail-empty');
     empty.append(element('div', 'empty-icon', '✓'), element('h2', '', 'Elegí un ticket'));
     empty.append(element('p', 'muted', 'Las consultas y reportes de errores van a aparecer acá.'));
@@ -1369,7 +1383,22 @@ function renderDashboard() {
   }
   content.append(columns);
   shell.append(content);
+  const previousThread = app.querySelector('.thread');
+  const previousList = app.querySelector('.ticket-list');
+  const threadMemory = previousThread && {
+    ticketId: previousThread.dataset.ticketId,
+    top: previousThread.scrollTop,
+    atBottom: previousThread.scrollHeight - previousThread.scrollTop - previousThread.clientHeight < 48,
+  };
+  const listTop = previousList?.scrollTop || 0;
   app.replaceChildren(shell);
+  list.scrollTop = listTop;
+  const thread = app.querySelector('.thread');
+  if (thread) {
+    thread.scrollTop = threadMemory && threadMemory.ticketId === thread.dataset.ticketId && !threadMemory.atBottom
+      ? threadMemory.top
+      : thread.scrollHeight;
+  }
 }
 
 function renderTicketResults(list, heading) {
@@ -1395,6 +1424,15 @@ function renderTicketResults(list, heading) {
   const lateCount = visible.filter((ticket) => ticketUrgency(ticket)).length;
   heading.replaceChildren(element('span', '', `${visible.length} ${visible.length === 1 ? 'ticket' : 'tickets'}`));
   if (lateCount) heading.append(element('span', 'urgency urgency-late', `${lateCount} con demora`));
+  const sortLabel = sortOptions.find(([value]) => value === state.ticketSort)?.[1] || '';
+  const sortButton = element('button', 'sort-button', `${sortLabel} ▾`);
+  sortButton.type = 'button';
+  sortButton.setAttribute('aria-label', `Orden: ${sortLabel}. Tocá para cambiar.`);
+  sortButton.addEventListener('click', () => {
+    state.ticketSort = state.ticketSort === 'urgent' ? 'recent' : 'urgent';
+    renderTicketResults(list, heading);
+  });
+  heading.append(sortButton);
   list.replaceChildren(heading);
   if (!visible.length) {
     const emptyList = element('div', 'ticket-empty');
@@ -1593,11 +1631,6 @@ async function selectTicket(ticketId) {
   if (pageChanged) {
     app.querySelector('.dashboard-main')?.focus({ preventScroll: true });
     window.scrollTo(0, 0);
-  }
-  if (window.matchMedia('(max-width: 760px)').matches) {
-    window.requestAnimationFrame(() => {
-      app.querySelector('.detail-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    });
   }
   await loadMessages(ticketId);
 }
