@@ -270,6 +270,11 @@ h2 { margin-bottom: 6px; font-size: 21px; letter-spacing: -.025em; }
   .overview-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
   .stat-card { padding: 14px; }
   .stat-value { font-size: 28px; }
+  .stat-unassigned { grid-column: 1 / -1; grid-template: "accent label value" auto "accent detail value" auto / 4px minmax(0, 1fr) auto; align-items: center; column-gap: 11px; row-gap: 3px; }
+  .stat-unassigned::before { grid-area: accent; width: 4px; height: 28px; }
+  .stat-unassigned .stat-label { grid-area: label; }
+  .stat-unassigned .stat-value { grid-area: value; font-size: 27px; }
+  .stat-unassigned .stat-detail { grid-area: detail; }
   .overview-grid { grid-template-columns: 1fr; }
   .overview-card { padding: 17px; }
   .workload-list { grid-template-columns: 1fr; }
