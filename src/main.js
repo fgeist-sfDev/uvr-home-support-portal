@@ -129,7 +129,7 @@ function updateDocumentTitle() {
   document.title = `${state.unseenTickets ? `(${state.unseenTickets}) ` : ''}Soporte UVR Home`;
 }
 
-function showToast(message, actionLabel, onAction) {
+function showToast(message, actionLabel, onAction, duration = 12000) {
   let region = document.querySelector('.toast-region');
   if (!region) {
     region = element('div', 'toast-region');
@@ -154,7 +154,7 @@ function showToast(message, actionLabel, onAction) {
   close.addEventListener('click', () => toast.remove());
   toast.append(close);
   region.replaceChildren(toast);
-  window.setTimeout(() => toast.remove(), 12000);
+  window.setTimeout(() => toast.remove(), duration);
 }
 
 function formatDate(value) {
@@ -164,7 +164,10 @@ function formatDate(value) {
 
 function setFeedback(error = '', notice = '') {
   state.error = error;
-  state.notice = notice;
+  state.notice = '';
+  // En el panel, los avisos de éxito son efímeros: no se quedan pegados en cada pantalla.
+  if (notice && state.authorized) showToast(notice, '', null, 5000);
+  else state.notice = notice;
 }
 
 function userFacingError(error, fallback) {
@@ -539,15 +542,21 @@ function renderDetail(ticket) {
     const unassigned = document.createElement('option');
     unassigned.value = '';
     unassigned.textContent = 'Sin asignar';
+    const activeAgents = state.agents.filter((agent) => agent.role === 'agent' && agent.active);
     assignment.append(unassigned);
-    state.agents
-      .filter((agent) => agent.role === 'agent' && agent.active)
-      .forEach((agent) => {
-        const option = document.createElement('option');
-        option.value = agent.user_id;
-        option.textContent = agent.email;
-        assignment.append(option);
-      });
+    activeAgents.forEach((agent) => {
+      const option = document.createElement('option');
+      option.value = agent.user_id;
+      option.textContent = agent.email;
+      assignment.append(option);
+    });
+    if (!activeAgents.length) {
+      unassigned.textContent = 'Sin asignar · sin agentes activos';
+      const addAgents = element('button', 'text-button agents-link', 'Habilitar agentes');
+      addAgents.type = 'button';
+      addAgents.addEventListener('click', () => navigateTo('agents'));
+      controls.append(addAgents);
+    }
     const historicalAgent = state.agents.find((agent) => agent.user_id === ticket.assigned_agent_id && agent.removed_at);
     if (historicalAgent) {
       const option = document.createElement('option');
@@ -1239,6 +1248,7 @@ function applyRoute({ restoring = false } = {}) {
 
 function navigateTo(page) {
   state.page = page;
+  state.error = '';
   if (page === 'tickets') {
     state.unseenTickets = 0;
     updateDocumentTitle();
@@ -1622,6 +1632,7 @@ async function loadMessages(ticketId) {
 async function selectTicket(ticketId) {
   const pageChanged = state.page !== 'tickets';
   state.selectedId = ticketId;
+  state.error = '';
   state.page = 'tickets';
   syncRoute();
   state.unseenTickets = 0;
