@@ -14,6 +14,10 @@ const typeNames = { support: 'Ayuda', bug: 'Error de la app' };
 const TICKET_PAGE_SIZE = 50;
 const POLL_INTERVAL_MS = 30000;
 const HOUR_MS = 3600000;
+const AVATAR_SIZE = 320;
+const MAX_AVATAR_SOURCE_BYTES = 8 * 1024 * 1024;
+const AVATAR_URL_TTL_SECONDS = 3600;
+const AVATAR_URL_REFRESH_MS = 40 * 60000;
 // Horas sin respuesta del equipo antes de marcar un ticket como "con demora" o "urgente".
 const responseLimits = {
   open: { late: 4, urgent: 24 },
@@ -46,6 +50,12 @@ const state = {
   tickets: [],
   messages: [],
   agents: [],
+  profile: null,
+  team: {},
+  avatarUrls: {},
+  avatarUrlsAt: 0,
+  clientContexts: {},
+  profileSaving: false,
   dashboardStats: null,
   selectedId: null,
   filter: 'open',
@@ -87,10 +97,32 @@ function initials(name) {
   return (parts[0][0] + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toLocaleUpperCase('es-AR');
 }
 
-function renderAvatar(name) {
+function renderAvatar(name, avatarPath, size = '') {
   let tone = 0;
   for (const char of String(name || '')) tone = (tone * 31 + char.charCodeAt(0)) % 5;
-  return element('span', `avatar tone-${tone}`, initials(name));
+  const url = avatarPath ? state.avatarUrls[avatarPath] : '';
+  const sizeClass = size ? ` avatar-${size}` : '';
+  if (!url) return element('span', `avatar tone-${tone}${sizeClass}`, initials(name));
+  const wrapper = element('span', `avatar has-photo${sizeClass}`);
+  const photo = document.createElement('img');
+  photo.src = url;
+  photo.alt = '';
+  photo.decoding = 'async';
+  wrapper.append(photo);
+  return wrapper;
+}
+
+function teamMember(userId) {
+  return userId ? state.team[userId] || null : null;
+}
+
+function memberName(member, fallback = 'Equipo UVR Home') {
+  return member?.display_name || fallback;
+}
+
+function formatMonthYear(value) {
+  if (!value) return '—';
+  return new Intl.DateTimeFormat('es-AR', { month: 'long', year: 'numeric' }).format(new Date(value));
 }
 
 function formatAge(value) {
@@ -171,9 +203,15 @@ function setFeedback(error = '', notice = '') {
 }
 
 function userFacingError(error, fallback) {
+  if (error?.userMessage) return error.userMessage;
   const message = typeof error?.message === 'string' ? error.message.toLocaleLowerCase('en') : '';
   const code = typeof error?.code === 'string' ? error.code.toLocaleLowerCase('en') : '';
 
+  // Los mensajes de las funciones SQL ya están escritos para las personas usuarias.
+  if (code === 'p0001' && typeof error.message === 'string' && error.message) return error.message;
+  if (message.includes('maximum allowed size') || message.includes('exceeded the maximum')) {
+    return 'La foto pesa demasiado. Elegí una de hasta 1 MB.';
+  }
   if (message.includes('email_already_registered')) {
     return 'Ese correo ya tiene una cuenta. Volvé a intentar para habilitarla como agente.';
   }
@@ -518,12 +556,56 @@ function renderTicketRow(ticket) {
 }
 
 function renderMessage(message) {
-  const bubble = element('article', `message${message.author_role === 'support' ? ' from-support' : ''}`);
+  const fromSupport = message.author_role === 'support';
+  const bubble = element('article', `message${fromSupport ? ' from-support' : ''}`);
+  const member = fromSupport ? teamMember(message.author_id) : null;
   const head = element('div', 'message-head');
-  head.append(element('strong', '', message.author_role === 'support' ? 'Equipo UVR Home' : 'Usuario'));
+  const author = element('span', 'message-author');
+  if (member) author.append(renderAvatar(memberName(member), member.avatar_path, 'xs'));
+  author.append(element('strong', '', fromSupport ? memberName(member) : 'Usuario'));
+  head.append(author);
   head.append(element('time', '', formatDate(message.created_at)));
   bubble.append(head, element('p', 'message-body', message.body));
   return bubble;
+}
+
+function renderClientPanel(ticket) {
+  const context = state.clientContexts[ticket.id];
+  const panel = element('section', 'client-panel');
+  panel.setAttribute('aria-label', 'Datos del cliente');
+  const identity = element('div', 'client-identity');
+  identity.append(renderAvatar(ticket.client_name, null, 'lg'));
+  const names = element('div', 'client-names');
+  names.append(
+    element('strong', '', ticket.client_name),
+    element('span', 'muted', context?.account_role === 'cleaner' ? 'Profesional' : context?.account_role === 'client' ? 'Cliente' : 'Usuario de UVR Home')
+  );
+  identity.append(names);
+  panel.append(identity);
+  if (!context) {
+    panel.append(element('p', 'muted client-note', context === null ? 'No pudimos cargar los datos de la cuenta.' : 'Cargando datos de la cuenta…'));
+    return panel;
+  }
+  const badge = element(
+    'span',
+    `trust-badge ${context.identity_verified ? 'is-verified' : 'is-unverified'}`,
+    context.identity_verified ? '✓ Identidad verificada' : 'Identidad sin verificar'
+  );
+  const facts = element('dl', 'client-facts');
+  [
+    ['Con nosotros desde', formatMonthYear(context.member_since)],
+    ['Servicios completados', String(context.completed_services ?? 0)],
+    ['Servicios cancelados', String(context.cancelled_services ?? 0)],
+    ['Tickets', `${context.tickets_total ?? 0} · ${context.tickets_open ?? 0} ${Number(context.tickets_open) === 1 ? 'abierto' : 'abiertos'}`],
+    ['App', `${ticket.app_version || '—'} · ${ticket.platform}`],
+    ['Ticket creado', formatAge(ticket.created_at)],
+  ].forEach(([label, value]) => {
+    const row = element('div', '');
+    row.append(element('dt', '', label), element('dd', '', value));
+    facts.append(row);
+  });
+  panel.append(badge, facts, element('p', 'fine-print client-note', 'No mostramos teléfono, correo ni documentos. Solo lo necesario para atender el caso.'));
+  return panel;
 }
 
 function renderDetail(ticket) {
@@ -536,7 +618,14 @@ function renderDetail(ticket) {
   const title = element('div', 'detail-title');
   const titleText = element('div', 'detail-title-text');
   titleText.append(element('h2', '', ticket.subject));
-  titleText.append(element('p', 'ticket-context', `${ticket.client_name} · ${typeNames[ticket.ticket_type] || 'Ayuda'} · App ${ticket.app_version || '—'} · ${ticket.platform} · ${formatDate(ticket.created_at)}`));
+  const context = element('p', 'ticket-context');
+  context.append(
+    element('span', `status status-${ticket.status}`, statusNames[ticket.status] || ticket.status),
+    element('span', '', ticket.client_name),
+    element('span', '', typeNames[ticket.ticket_type] || 'Ayuda'),
+    element('span', '', formatDate(ticket.created_at))
+  );
+  titleText.append(context);
   title.append(renderAvatar(ticket.client_name), titleText);
   const controls = element('div', 'ticket-controls');
   if (state.role === 'owner') {
@@ -609,10 +698,11 @@ function renderDetail(ticket) {
   thread.dataset.ticketId = ticket.id;
   state.messages.forEach((message) => thread.append(renderMessage(message)));
   if (!state.messages.length) thread.append(element('p', 'muted thread-empty', 'Todavía no hay mensajes.'));
-  panel.append(thread);
+  const split = element('div', 'detail-split');
+  const main = element('div', 'detail-main');
+  main.append(thread);
 
-  const form = element('form', 'reply-form');
-  const quick = element('div', 'quick-replies');
+  const form = element('form', 'reply-form');  const quick = element('div', 'quick-replies');
   quick.setAttribute('role', 'group');
   quick.setAttribute('aria-label', 'Respuestas rápidas');
   const aiButton = element('button', 'ai-button', '✨ Sugerir respuesta');
@@ -687,8 +777,135 @@ function renderDetail(ticket) {
     event.preventDefault();
     await sendReply(ticket.id, new FormData(form).get('reply')?.toString().trim());
   });
-  panel.append(form);
+  main.append(form);
+  split.append(main, renderClientPanel(ticket));
+  panel.append(split);
   return panel;
+}
+
+function renderProfile(content) {
+  const profile = state.profile;
+  const head = element('section', 'overview-hero');
+  const intro = element('div', 'overview-intro');
+  intro.append(
+    element('p', 'eyebrow', 'TU CUENTA'),
+    element('h1', '', 'Mi perfil'),
+    element('p', 'overview-subtitle', 'Así te ven las personas del equipo y quienes reciben tus respuestas.')
+  );
+  head.append(intro);
+  content.append(head);
+  renderFeedback(content);
+
+  if (!profile) {
+    content.append(element('p', 'muted empty', 'No pudimos cargar tu perfil. Actualizá la página e intentá de nuevo.'));
+    return;
+  }
+
+  const card = element('form', 'profile-card');
+  const photoColumn = element('div', 'profile-photo');
+  const preview = element('div', 'profile-preview');
+  const shownName = profile.display_name || state.session?.user?.email || 'UVR';
+  let pendingFile = null;
+  let removePhoto = false;
+  let previewUrl = '';
+  const paintPreview = () => {
+    const hasPhoto = !removePhoto && (pendingFile || (profile.avatar_path && state.avatarUrls[profile.avatar_path]));
+    if (pendingFile && previewUrl) {
+      const image = document.createElement('img');
+      image.src = previewUrl;
+      image.alt = 'Foto elegida';
+      preview.replaceChildren(image);
+    } else {
+      preview.replaceChildren(renderAvatar(shownName, removePhoto ? null : profile.avatar_path, 'xl'));
+    }
+    preview.classList.toggle('has-photo', Boolean(hasPhoto));
+    remove.hidden = !hasPhoto;
+    pick.textContent = hasPhoto ? 'Cambiar foto' : 'Subir foto';
+  };
+  const file = document.createElement('input');
+  file.type = 'file';
+  file.accept = 'image/jpeg,image/png,image/webp';
+  file.hidden = true;
+  const pick = element('button', 'secondary-button', 'Subir foto');
+  pick.type = 'button';
+  pick.disabled = state.profileSaving;
+  const remove = element('button', 'text-button danger-link', 'Quitar foto');
+  remove.type = 'button';
+  remove.disabled = state.profileSaving;
+  pick.addEventListener('click', () => file.click());
+  file.addEventListener('change', () => {
+    const chosen = file.files?.[0];
+    if (!chosen) return;
+    if (chosen.size > MAX_AVATAR_SOURCE_BYTES) {
+      setFeedback('Esa imagen es demasiado grande. Elegí una de hasta 8 MB.');
+      renderDashboard();
+      return;
+    }
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    pendingFile = chosen;
+    previewUrl = URL.createObjectURL(chosen);
+    removePhoto = false;
+    paintPreview();
+  });
+  remove.addEventListener('click', () => {
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    previewUrl = '';
+    pendingFile = null;
+    file.value = '';
+    removePhoto = true;
+    paintPreview();
+  });
+  photoColumn.append(preview, pick, remove, file, element('p', 'fine-print', 'JPG, PNG o WebP. La recortamos en cuadrado.'));
+  paintPreview();
+
+  const fields = element('div', 'profile-fields');
+  const nameLabel = element('label', '', 'Nombre visible');
+  const nameInput = element('input', 'text-input');
+  nameInput.name = 'display_name';
+  nameInput.maxLength = 60;
+  nameInput.autocomplete = 'name';
+  nameInput.placeholder = 'Cómo querés que te vean';
+  nameInput.value = profile.display_name || '';
+  nameInput.disabled = state.profileSaving;
+  nameLabel.append(nameInput);
+  const bioLabel = element('label', '', 'Descripción');
+  const bioInput = document.createElement('textarea');
+  bioInput.className = 'text-input';
+  bioInput.name = 'bio';
+  bioInput.rows = 4;
+  bioInput.maxLength = 280;
+  bioInput.placeholder = 'Contá en una línea qué hacés en el equipo.';
+  bioInput.value = profile.bio || '';
+  bioInput.disabled = state.profileSaving;
+  const counter = element('span', 'field-counter', `${bioInput.value.length}/280`);
+  bioInput.addEventListener('input', () => { counter.textContent = `${bioInput.value.length}/280`; });
+  bioLabel.append(bioInput, counter);
+  const facts = element('dl', 'profile-facts');
+  [
+    ['Correo', state.session?.user?.email || profile.email],
+    ['Rol', profile.role === 'owner' ? 'Propietario' : 'Agente'],
+    ['En el equipo desde', formatMonthYear(profile.created_at)],
+  ].forEach(([label, value]) => {
+    const row = element('div', '');
+    row.append(element('dt', '', label), element('dd', '', value));
+    facts.append(row);
+  });
+  const save = element('button', 'primary-button', state.profileSaving ? 'Guardando…' : 'Guardar cambios');
+  save.type = 'submit';
+  save.disabled = state.profileSaving;
+  fields.append(nameLabel, bioLabel, facts, save);
+  card.append(photoColumn, fields);
+  card.addEventListener('submit', (event) => {
+    event.preventDefault();
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    void saveProfile({
+      displayName: nameInput.value,
+      bio: bioInput.value,
+      file: pendingFile,
+      removePhoto,
+    });
+  });
+  content.append(card);
 }
 
 function renderAgentManagement(content) {
@@ -796,17 +1013,25 @@ function renderAgentManagement(content) {
     const owner = agent.role === 'owner';
     const row = element('article', `agent-card${owner ? ' is-owner' : ''}${!agent.active && !owner ? ' is-disabled' : ''}`);
     const identity = element('div', 'agent-card-identity');
-    const initials = agent.email?.split('@')[0]?.slice(0, 2).toLocaleUpperCase('es-AR') || 'UV';
-    identity.append(element('span', 'agent-card-avatar', initials));
+    const member = teamMember(agent.user_id);
+    const initialsText = member?.display_name
+      ? initials(member.display_name)
+      : agent.email?.split('@')[0]?.slice(0, 2).toLocaleUpperCase('es-AR') || 'UV';
+    identity.append(member?.avatar_path && state.avatarUrls[member.avatar_path]
+      ? renderAvatar(memberName(member), member.avatar_path, 'md')
+      : element('span', 'agent-card-avatar', initialsText));
     const details = element('div', 'agent-card-details');
-    const name = element('strong', 'agent-email', owner ? `${agent.email} · Vos` : agent.email);
+    const shownName = member?.display_name || agent.email;
+    const name = element('strong', 'agent-email', owner ? `${shownName} · Vos` : shownName);
     const meta = element('div', 'agent-card-meta');
+    if (member?.display_name) meta.append(element('span', 'agent-mail', agent.email));
     meta.append(element('span', `agent-role${owner ? ' is-owner' : ''}`, owner ? 'Propietario' : 'Agente'));
     if (!owner) {
       const status = !agent.active ? 'Acceso deshabilitado' : agent.available ? 'Disponible' : 'En pausa';
       meta.append(element('span', `agent-state${!agent.active ? ' is-disabled' : agent.available ? ' is-available' : ' is-paused'}`, status));
     }
     details.append(name, meta);
+    if (member?.bio) details.append(element('span', 'agent-bio', member.bio));
     if (!owner) {
       const assigned = Number(agent.active_tickets) || 0;
       const total = Number(agent.total_tickets) || 0;
@@ -933,6 +1158,118 @@ async function loadAgents() {
     return;
   }
   state.agents = data || [];
+  renderDashboard();
+}
+
+async function resolveAvatarUrls() {
+  const paths = [...new Set([state.profile?.avatar_path, ...Object.values(state.team).map((member) => member.avatar_path)].filter(Boolean))];
+  const stale = Date.now() - state.avatarUrlsAt > AVATAR_URL_REFRESH_MS;
+  if (!paths.length || (!stale && paths.every((path) => state.avatarUrls[path]))) return false;
+  const { data, error } = await state.supabase.storage.from('support-avatars').createSignedUrls(paths, AVATAR_URL_TTL_SECONDS);
+  if (error || !data) return false;
+  state.avatarUrls = Object.fromEntries(data.filter((item) => item.signedUrl).map((item) => [item.path, item.signedUrl]));
+  state.avatarUrlsAt = Date.now();
+  return true;
+}
+
+async function loadTeam() {
+  if (!state.authorized) return;
+  const userId = state.session?.user?.id;
+  const [teamResult, profileResult] = await Promise.all([
+    state.supabase.rpc('support_team_directory'),
+    state.supabase.rpc('my_support_profile'),
+  ]);
+  if (userId !== state.session?.user?.id || !state.authorized) return;
+  if (!teamResult.error) state.team = Object.fromEntries((teamResult.data || []).map((member) => [member.user_id, member]));
+  if (!profileResult.error) state.profile = profileResult.data?.[0] ?? null;
+  await resolveAvatarUrls();
+}
+
+async function loadClientContext(ticketId) {
+  const userId = state.session?.user?.id;
+  const { data, error } = await state.supabase.rpc('support_ticket_client_context', { p_ticket_id: ticketId });
+  if (userId !== state.session?.user?.id || !state.authorized) return;
+  state.clientContexts[ticketId] = error ? null : data;
+  if (state.page === 'tickets' && state.selectedId === ticketId && !isTypingInApp()) renderDashboard();
+}
+
+function userError(message) {
+  const error = new Error(message);
+  error.userMessage = message;
+  return error;
+}
+
+function prepareAvatar(file) {
+  return new Promise((resolve, reject) => {
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+      reject(userError('Elegí una imagen JPG, PNG o WebP.'));
+      return;
+    }
+    const image = new Image();
+    const objectUrl = URL.createObjectURL(file);
+    image.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      const side = Math.min(image.naturalWidth, image.naturalHeight);
+      const canvas = document.createElement('canvas');
+      canvas.width = AVATAR_SIZE;
+      canvas.height = AVATAR_SIZE;
+      canvas.getContext('2d').drawImage(
+        image,
+        (image.naturalWidth - side) / 2,
+        (image.naturalHeight - side) / 2,
+        side,
+        side,
+        0,
+        0,
+        AVATAR_SIZE,
+        AVATAR_SIZE
+      );
+      canvas.toBlob((blob) => (blob ? resolve(blob) : reject(userError('No pudimos procesar la imagen.'))), 'image/jpeg', 0.86);
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(userError('No pudimos leer esa imagen. Probá con otra.'));
+    };
+    image.src = objectUrl;
+  });
+}
+
+async function saveProfile({ displayName, bio, file, removePhoto }) {
+  const userId = state.session?.user?.id;
+  const previousPath = state.profile?.avatar_path || null;
+  let avatarPath = removePhoto ? null : previousPath;
+  state.profileSaving = true;
+  setFeedback();
+  renderDashboard();
+  try {
+    if (file) {
+      const blob = await prepareAvatar(file);
+      avatarPath = `${userId}/avatar-${Date.now()}.jpg`;
+      const { error: uploadError } = await state.supabase.storage
+        .from('support-avatars')
+        .upload(avatarPath, blob, { contentType: 'image/jpeg', cacheControl: '3600' });
+      if (uploadError) throw uploadError;
+    }
+    const { error } = await state.supabase.rpc('update_my_support_profile', {
+      p_display_name: displayName,
+      p_bio: bio,
+      p_avatar_path: avatarPath,
+    });
+    if (error) {
+      if (file) await state.supabase.storage.from('support-avatars').remove([avatarPath]);
+      throw error;
+    }
+    if (previousPath && previousPath !== avatarPath) await state.supabase.storage.from('support-avatars').remove([previousPath]);
+    if (userId !== state.session?.user?.id) return;
+    state.avatarUrlsAt = 0;
+    await loadTeam();
+    setFeedback('', 'Guardamos tu perfil.');
+  } catch (error) {
+    if (userId !== state.session?.user?.id) return;
+    setFeedback(userFacingError(error, 'No pudimos guardar tu perfil. Probá de nuevo.'));
+  } finally {
+    state.profileSaving = false;
+  }
   renderDashboard();
 }
 
@@ -1234,19 +1571,20 @@ async function setMyAvailability() {
 }
 
 async function refreshDashboard() {
-  const requests = [loadDashboardStats(), loadTickets()];
+  const requests = [loadDashboardStats(), loadTickets(), loadTeam()];
   if (state.role === 'owner') requests.push(loadAgents());
   await Promise.all(requests);
 }
 
 function routeFromHash() {
-  const match = /^#\/(tickets|agents)(?:\/([0-9a-f-]{36}))?$/i.exec(window.location.hash);
+  const match = /^#\/(tickets|agents|profile)(?:\/([0-9a-f-]{36}))?$/i.exec(window.location.hash);
   if (!match) return { page: 'overview', ticketId: null };
   return { page: match[1].toLowerCase(), ticketId: match[2] || null };
 }
 
 function routeHash() {
   if (state.page === 'tickets') return state.selectedId ? `#/tickets/${state.selectedId}` : '#/tickets';
+  if (state.page === 'profile') return '#/profile';
   return state.page === 'agents' ? '#/agents' : '#/';
 }
 
@@ -1314,7 +1652,14 @@ function renderDashboard() {
   brandText.append(element('strong', '', 'UVR Home'), element('span', 'muted', 'Soporte'));
   brand.append(brandText);
   const account = element('div', 'header-account');
-  account.append(element('span', 'muted account-email', state.session?.user?.email || 'Agente'));
+  const myName = state.profile?.display_name || state.session?.user?.email || 'Agente';
+  const me = element('button', `account-chip${state.page === 'profile' ? ' active' : ''}`);
+  me.type = 'button';
+  me.setAttribute('aria-label', 'Mi perfil');
+  if (state.page === 'profile') me.setAttribute('aria-current', 'page');
+  me.append(renderAvatar(myName, state.profile?.avatar_path, 'sm'), element('span', 'account-email', myName));
+  me.addEventListener('click', () => navigateTo('profile'));
+  account.append(me);
   const nav = element('nav', 'header-nav');
   const overview = element('button', state.page === 'overview' ? 'nav-button active' : 'nav-button', 'Resumen');
   overview.type = 'button';
@@ -1349,6 +1694,12 @@ function renderDashboard() {
   content.tabIndex = -1;
   if (state.role === 'owner' && state.page === 'agents') {
     renderAgentManagement(content);
+    shell.append(content);
+    app.replaceChildren(shell);
+    return;
+  }
+  if (state.page === 'profile') {
+    renderProfile(content);
     shell.append(content);
     app.replaceChildren(shell);
     return;
@@ -1585,12 +1936,13 @@ async function pollSupport() {
     if (selectedChanged) {
       const { data: messages, error } = await state.supabase
         .from('support_ticket_messages')
-        .select('id, author_role, body, created_at')
+        .select('id, author_id, author_role, body, created_at')
         .eq('ticket_id', state.selectedId)
         .order('created_at', { ascending: true })
         .limit(200);
       if (!error && userId === state.session?.user?.id) state.messages = messages || [];
     }
+    await resolveAvatarUrls();
     if (fresh.length || replies.length) {
       state.unseenTickets += fresh.length + replies.length;
       updateDocumentTitle();
@@ -1606,7 +1958,7 @@ async function pollSupport() {
     const list = app.querySelector('.ticket-list');
     if (isTypingInApp() && list && state.page === 'tickets') {
       renderTicketResults(list, list.querySelector('.list-heading') || element('div', 'list-heading'));
-    } else if (!isTypingInApp()) {
+    } else if (!isTypingInApp() && state.page !== 'profile') {
       renderDashboard();
     }
   } finally {
@@ -1634,6 +1986,12 @@ function resetTicketView() {
   state.ticketsLoaded = false;
   state.loadingMore = false;
   state.drafts = {};
+  state.profile = null;
+  state.team = {};
+  state.avatarUrls = {};
+  state.avatarUrlsAt = 0;
+  state.clientContexts = {};
+  state.profileSaving = false;
 }
 
 document.addEventListener('visibilitychange', () => {
@@ -1644,9 +2002,10 @@ async function loadMessages(ticketId) {
   if (!state.authorized) return;
   const requestId = ++state.messageRequest;
   const userId = state.session?.user?.id;
+  void loadClientContext(ticketId);
   const { data, error } = await state.supabase
     .from('support_ticket_messages')
-    .select('id, author_role, body, created_at')
+    .select('id, author_id, author_role, body, created_at')
     .eq('ticket_id', ticketId)
     .order('created_at', { ascending: true })
     .limit(200);
@@ -1851,7 +2210,7 @@ async function boot() {
   if (state.role !== 'owner' && state.page === 'agents') state.page = 'overview';
   syncRoute({ replace: true });
   startPolling();
-  const dashboardRequests = [loadDashboardStats()];
+  const dashboardRequests = [loadDashboardStats(), loadTeam()];
   if (state.role === 'owner') dashboardRequests.push(loadAgents());
   else state.agents = [];
   await Promise.all(dashboardRequests);

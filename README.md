@@ -38,6 +38,10 @@ The repository is public because GitHub Pages is free for public repositories. O
 
 5. Sign in with the owner's email and configure TOTP. The **Resumen** dashboard shows ticket volume, statuses, recent activity, and agent workload. Active tickets are automatically assigned to the available agent with the fewest active tickets; if nobody is available, they stay unassigned in the owner's queue. Agents can pause or resume assignment without losing their current tickets. From **Usuarios**, the owner can invite new users or add existing UVR Home accounts, and enable or disable agents. Existing accounts do not receive another invitation email; they can request a magic link after being added. From **Tickets**, the owner can override automatic assignment; agents can only see and answer tickets assigned to them. Public signups stay disabled, and requesting a magic link never creates an account.
 
+## Profiles and customer context
+
+Apply migration `20261121000000_support_profiles_and_client_context.sql` before publishing this version. It adds each team member's display name, description and photo (private `support-avatars` bucket, 1 MB, JPG/PNG/WebP, one folder per person) and the `support_ticket_client_context` RPC. **Mi perfil** edits your own data; photos are cropped to a square in the browser and served with signed URLs. The ticket detail shows a customer panel with verified/unverified identity, member-since date, completed and cancelled services, and ticket counts. It never exposes email, phone, ID documents or addresses. If the migration is missing, the portal keeps working without profiles or the customer panel.
+
 Pushing to `main` builds and deploys the site. The workflow fails if either public Supabase variable is missing.
 
 ## Local build
