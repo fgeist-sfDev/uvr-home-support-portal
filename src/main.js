@@ -508,6 +508,8 @@ function renderTicketRow(ticket) {
       : assignedAgent
       ? `${assignedAgent.email}${assignedAgent.removed_at ? ' · fuera del equipo' : ''}`
       : 'Sin asignar'));
+  } else if (!ticket.assigned_agent_id) {
+    meta.append(element('span', 'ticket-row-agent', 'Sin asignar'));
   }
   body.append(meta);
   button.append(renderAvatar(ticket.client_name), body);
@@ -561,13 +563,6 @@ function renderDetail(ticket) {
       assignment.append(mine);
     }
     if (!activeAgents.length && !takenByMe) unassigned.textContent = 'Sin asignar · sin agentes activos';
-    if (!takenByMe && !['resolved', 'closed'].includes(ticket.status)) {
-      const take = element('button', 'text-button agents-link', 'Tomar ticket');
-      take.type = 'button';
-      take.disabled = state.busy;
-      take.addEventListener('click', () => claimTicket(ticket.id));
-      controls.append(take);
-    }
     const historicalAgent = state.agents.find((agent) => agent.user_id === ticket.assigned_agent_id && agent.removed_at);
     if (historicalAgent) {
       const option = document.createElement('option');
@@ -582,6 +577,17 @@ function renderDetail(ticket) {
       ? claimTicket(ticket.id)
       : assignTicket(ticket.id, assignment.value || null)));
     controls.append(assignment);
+  }
+  const takenByMeNow = ticket.assigned_agent_id === state.session?.user?.id;
+  const canTake = !takenByMeNow
+    && !['resolved', 'closed'].includes(ticket.status)
+    && (state.role === 'owner' || !ticket.assigned_agent_id);
+  if (canTake) {
+    const take = element('button', 'text-button agents-link', 'Tomar ticket');
+    take.type = 'button';
+    take.disabled = state.busy;
+    take.addEventListener('click', () => claimTicket(ticket.id));
+    controls.prepend(take);
   }
   const status = document.createElement('select');
   status.className = 'status-select';
@@ -1384,7 +1390,7 @@ function renderDashboard() {
   pills.setAttribute('role', 'group');
   pills.setAttribute('aria-label', 'Filtrar por estado');
   const pillOptions = [...ticketFilters];
-  if (state.role === 'owner') pillOptions.push(['unassigned', 'Sin asignar']);
+  pillOptions.push(['unassigned', 'Sin asignar']);
   pillOptions.push(['all', 'Todos']);
   pillOptions.forEach(([value, label]) => {
     const count = value === 'all'
