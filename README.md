@@ -42,6 +42,10 @@ The repository is public because GitHub Pages is free for public repositories. O
 
 Apply migration `20261121000000_support_profiles_and_client_context.sql` before publishing this version. It adds each team member's display name, description and photo (private `support-avatars` bucket, 1 MB, JPG/PNG/WebP, one folder per person) and the `support_ticket_client_context` RPC. **Mi perfil** edits your own data; photos are cropped to a square in the browser and served with signed URLs. The ticket detail shows a customer panel with verified/unverified identity, member-since date, completed and cancelled services, and ticket counts. It never exposes email, phone, ID documents or addresses. If the migration is missing, the portal keeps working without profiles or the customer panel.
 
+## Command palette and shortcuts
+
+`Ctrl/Cmd + K` opens a palette that searches tickets and runs commands: go to a page, filter tickets, take or change the status of the open ticket, insert a quick reply, sign out. In **Tickets**, `J`/`K` move between tickets, `/` focuses the search and `Esc` closes the open ticket (shortcuts are ignored while typing). No backend changes.
+
 Pushing to `main` builds and deploys the site. The workflow fails if either public Supabase variable is missing.
 
 ## Local build

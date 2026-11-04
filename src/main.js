@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import './style.css';
+import { closePalette, isPaletteOpen, openPalette } from './palette.js';
 
 const app = document.querySelector('#app');
 const statuses = [
@@ -1652,6 +1653,11 @@ function renderDashboard() {
   brandText.append(element('strong', '', 'UVR Home'), element('span', 'muted', 'Soporte'));
   brand.append(brandText);
   const account = element('div', 'header-account');
+  const cmdButton = element('button', 'cmd-button');
+  cmdButton.type = 'button';
+  cmdButton.setAttribute('aria-label', 'Abrir la paleta de comandos');
+  cmdButton.append(element('span', 'cmd-label', 'Buscar o ejecutar…'), element('kbd', '', 'Ctrl K'));
+  cmdButton.addEventListener('click', () => openPalette(buildCommands));
   const myName = state.profile?.display_name || state.session?.user?.email || 'Agente';
   const me = element('button', `account-chip${state.page === 'profile' ? ' active' : ''}`);
   me.type = 'button';
@@ -1659,7 +1665,7 @@ function renderDashboard() {
   if (state.page === 'profile') me.setAttribute('aria-current', 'page');
   me.append(renderAvatar(myName, state.profile?.avatar_path, 'sm'), element('span', 'account-email', myName));
   me.addEventListener('click', () => navigateTo('profile'));
-  account.append(me);
+  account.append(cmdButton, me);
   const nav = element('nav', 'header-nav');
   const overview = element('button', state.page === 'overview' ? 'nav-button active' : 'nav-button', 'Resumen');
   overview.type = 'button';
@@ -1901,6 +1907,99 @@ function isTypingInApp() {
   const active = document.activeElement;
   return Boolean(active && app.contains(active) && ['INPUT', 'TEXTAREA', 'SELECT'].includes(active.tagName));
 }
+
+function insertQuickReply(ticketId, text) {
+  const current = (state.drafts[ticketId] || '').trim();
+  state.drafts[ticketId] = current ? `${current}\n\n${text}` : text;
+  renderDashboard();
+  const area = app.querySelector('.reply-input');
+  area?.focus();
+  area?.setSelectionRange(area.value.length, area.value.length);
+}
+
+function buildCommands() {
+  const myId = state.session?.user?.id;
+  const items = [
+    { group: 'Ir a', label: 'Resumen', keywords: 'inicio panel', featured: true, run: () => navigateTo('overview') },
+    { group: 'Ir a', label: 'Tickets', keywords: 'bandeja consultas', featured: true, run: () => navigateTo('tickets') },
+    { group: 'Ir a', label: 'Mi perfil', keywords: 'foto nombre descripcion cuenta', featured: true, run: () => navigateTo('profile') },
+  ];
+  if (state.role === 'owner') {
+    items.splice(2, 0, { group: 'Ir a', label: 'Usuarios', keywords: 'equipo agentes invitar', featured: true, run: () => navigateTo('agents') });
+  }
+  ticketFilters.concat([['unassigned', 'Sin asignar'], ['all', 'Todos']]).forEach(([value, label]) => {
+    items.push({
+      group: 'Filtrar tickets',
+      label: `Ver ${label.toLocaleLowerCase('es-AR')}`,
+      keywords: 'filtro bandeja',
+      run: () => {
+        state.filter = value;
+        state.selectedId = null;
+        state.page = 'tickets';
+        syncRoute();
+        renderDashboard();
+      },
+    });
+  });
+  const ticket = state.page === 'tickets' ? state.tickets.find((item) => item.id === state.selectedId) : null;
+  if (ticket) {
+    const canTake = ticket.assigned_agent_id !== myId
+      && !['resolved', 'closed'].includes(ticket.status)
+      && (state.role === 'owner' || !ticket.assigned_agent_id);
+    if (canTake) items.push({ group: 'Este ticket', label: 'Tomar ticket', keywords: 'asignarme quedarme', featured: true, run: () => claimTicket(ticket.id) });
+    statuses.filter(([value]) => value !== ticket.status).forEach(([value, label]) => {
+      items.push({ group: 'Este ticket', label: `Marcar como: ${label}`, keywords: 'estado cambiar', featured: value === 'resolved', run: () => updateStatus(ticket.id, value) });
+    });
+    quickReplies.forEach(([name, text]) => {
+      items.push({ group: 'Respuestas rápidas', label: name, hint: 'Insertar', keywords: `responder ${text}`, run: () => insertQuickReply(ticket.id, text) });
+    });
+  }
+  state.tickets.forEach((item) => {
+    items.push({
+      group: 'Tickets',
+      label: item.subject,
+      hint: `${item.client_name} · ${statusNames[item.status] || item.status}`,
+      keywords: `${item.client_name} ${item.id} ${typeNames[item.ticket_type] || ''}`,
+      run: () => selectTicket(item.id),
+    });
+  });
+  items.push(
+    { group: 'Cuenta', label: 'Ver atajos de teclado', keywords: 'ayuda teclas', run: () => showToast('J / K: ticket siguiente o anterior · /: buscar · Esc: cerrar ticket · Ctrl K: paleta', '', null, 15000) },
+    { group: 'Cuenta', label: 'Salir', keywords: 'cerrar sesion logout', run: signOut }
+  );
+  return items;
+}
+
+function stepTicket(direction) {
+  const rows = [...app.querySelectorAll('.ticket-row')];
+  if (!rows.length) return;
+  const current = rows.findIndex((row) => row.dataset.ticketId === state.selectedId);
+  const next = rows[Math.min(rows.length - 1, Math.max(0, current + direction))];
+  if (!next || next.dataset.ticketId === state.selectedId) return;
+  next.click();
+  app.querySelector('.ticket-row.selected')?.scrollIntoView({ block: 'nearest' });
+}
+
+document.addEventListener('keydown', (event) => {
+  if (!state.authorized) return;
+  if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'k') {
+    event.preventDefault();
+    if (isPaletteOpen()) closePalette();
+    else openPalette(buildCommands);
+    return;
+  }
+  if (isPaletteOpen() || event.ctrlKey || event.metaKey || event.altKey || state.page !== 'tickets') return;
+  const target = event.target;
+  if (target instanceof HTMLElement && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON'].includes(target.tagName))) {
+    if (!(target.tagName === 'BUTTON' && target.classList.contains('ticket-row'))) return;
+  }
+  if (event.key === 'j') stepTicket(1);
+  else if (event.key === 'k') stepTicket(-1);
+  else if (event.key === '/') {
+    event.preventDefault();
+    app.querySelector('.ticket-search')?.focus();
+  } else if (event.key === 'Escape' && state.selectedId) closeTicket();
+});
 
 async function pollSupport() {
   if (!state.authorized || state.polling || state.busy || document.hidden || state.page === 'agents') return;
