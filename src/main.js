@@ -1,6 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 import './style.css';
 import { closePalette, isPaletteOpen, openPalette } from './palette.js';
+import { createLiveChannel } from './realtime.js';
 
 const app = document.querySelector('#app');
 const statuses = [
@@ -14,6 +15,8 @@ const statusNames = Object.fromEntries(statuses);
 const typeNames = { support: 'Ayuda', bug: 'Error de la app' };
 const TICKET_PAGE_SIZE = 50;
 const POLL_INTERVAL_MS = 30000;
+// Con el canal en vivo conectado, el sondeo queda como red de seguridad.
+const LIVE_FALLBACK_MS = 120000;
 const HOUR_MS = 3600000;
 const AVATAR_SIZE = 320;
 const MAX_AVATAR_SOURCE_BYTES = 8 * 1024 * 1024;
@@ -70,6 +73,11 @@ const state = {
   unseenTickets: 0,
   pollTimer: null,
   polling: false,
+  pollQueued: false,
+  lastPollAt: 0,
+  live: null,
+  liveOk: false,
+  viewers: {},
   page: 'overview',
   busy: false,
   error: '',
@@ -626,7 +634,10 @@ function renderDetail(ticket) {
     element('span', '', typeNames[ticket.ticket_type] || 'Ayuda'),
     element('span', '', formatDate(ticket.created_at))
   );
-  titleText.append(context);
+  const viewers = element('p', 'ticket-viewers');
+  fillViewers(viewers, ticket.id);
+  viewers.setAttribute('role', 'status');
+  titleText.append(context, viewers);
   title.append(renderAvatar(ticket.client_name), titleText);
   const controls = element('div', 'ticket-controls');
   if (state.role === 'owner') {
@@ -1645,6 +1656,7 @@ window.addEventListener('popstate', () => {
 
 function renderDashboard() {
   if (!state.authorized) return renderUnauthorized();
+  state.live?.setTicket(state.page === 'tickets' ? state.selectedId : null);
   const shell = element('div', state.page === 'tickets' ? 'dashboard is-inbox' : 'dashboard');
   const header = element('header', 'app-header');
   const brand = element('div', 'header-brand');
@@ -2002,8 +2014,13 @@ document.addEventListener('keydown', (event) => {
 });
 
 async function pollSupport() {
-  if (!state.authorized || state.polling || state.busy || document.hidden || state.page === 'agents') return;
+  if (!state.authorized || state.busy || document.hidden || state.page === 'agents') return;
+  if (state.polling) {
+    state.pollQueued = true;
+    return;
+  }
   state.polling = true;
+  state.lastPollAt = Date.now();
   const userId = state.session?.user?.id;
   const previous = new Map(state.tickets.map((ticket) => [ticket.id, ticket]));
   const previousLatest = state.tickets.reduce((latest, ticket) => Math.max(latest, new Date(ticket.created_at).getTime()), 0);
@@ -2062,17 +2079,71 @@ async function pollSupport() {
     }
   } finally {
     state.polling = false;
+    if (state.pollQueued) {
+      state.pollQueued = false;
+      void pollSupport();
+    }
   }
 }
 
 function startPolling() {
   if (state.pollTimer) return;
-  state.pollTimer = window.setInterval(() => void pollSupport(), POLL_INTERVAL_MS);
+  state.pollTimer = window.setInterval(() => {
+    if (state.liveOk && Date.now() - state.lastPollAt < LIVE_FALLBACK_MS) return;
+    void pollSupport();
+  }, POLL_INTERVAL_MS);
+}
+
+function startLive() {
+  const userId = state.session?.user?.id;
+  if (state.live || !userId) return;
+  state.live = createLiveChannel({
+    supabase: state.supabase,
+    userId,
+    onChange: () => void pollSupport(),
+    onPresence: (viewers) => {
+      state.viewers = viewers;
+      paintViewers();
+    },
+    onStatus: (ok) => {
+      state.liveOk = ok;
+      // Al reconectar pudimos perdernos cambios.
+      if (ok) void pollSupport();
+    },
+  });
+}
+
+function stopLive() {
+  state.live?.stop();
+  state.live = null;
+  state.liveOk = false;
+  state.viewers = {};
+}
+
+function viewersOf(ticketId) {
+  return (state.viewers[ticketId] || []).map((id) => memberName(teamMember(id), 'Alguien del equipo'));
+}
+
+function fillViewers(slot, ticketId) {
+  const names = viewersOf(ticketId);
+  slot.replaceChildren();
+  slot.hidden = !names.length;
+  if (!names.length) return;
+  slot.append(
+    element('span', 'live-dot'),
+    element('span', '', names.length === 1 ? `${names[0]} está viendo este ticket` : `${names.slice(0, 2).join(' y ')}${names.length > 2 ? ` y ${names.length - 2} más` : ''} están viendo este ticket`)
+  );
+}
+
+function paintViewers() {
+  const slot = app.querySelector('.ticket-viewers');
+  if (slot) fillViewers(slot, state.selectedId);
 }
 
 function stopPolling() {
   if (state.pollTimer) window.clearInterval(state.pollTimer);
   state.pollTimer = null;
+  stopLive();
   state.unseenTickets = 0;
   updateDocumentTitle();
 }
@@ -2309,6 +2380,7 @@ async function boot() {
   if (state.role !== 'owner' && state.page === 'agents') state.page = 'overview';
   syncRoute({ replace: true });
   startPolling();
+  startLive();
   const dashboardRequests = [loadDashboardStats(), loadTeam()];
   if (state.role === 'owner') dashboardRequests.push(loadAgents());
   else state.agents = [];
