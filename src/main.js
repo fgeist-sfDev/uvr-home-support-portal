@@ -503,7 +503,9 @@ function renderTicketRow(ticket) {
   meta.append(element('span', '', typeNames[ticket.ticket_type] || 'Ayuda'));
   if (state.role === 'owner') {
     const assignedAgent = state.agents.find((agent) => agent.user_id === ticket.assigned_agent_id);
-    meta.append(element('span', 'ticket-row-agent', assignedAgent
+    meta.append(element('span', 'ticket-row-agent', ticket.assigned_agent_id === state.session?.user?.id
+      ? 'Tomado por vos'
+      : assignedAgent
       ? `${assignedAgent.email}${assignedAgent.removed_at ? ' · fuera del equipo' : ''}`
       : 'Sin asignar'));
   }
@@ -550,12 +552,21 @@ function renderDetail(ticket) {
       option.textContent = agent.email;
       assignment.append(option);
     });
-    if (!activeAgents.length) {
-      unassigned.textContent = 'Sin asignar · sin agentes activos';
-      const addAgents = element('button', 'text-button agents-link', 'Habilitar agentes');
-      addAgents.type = 'button';
-      addAgents.addEventListener('click', () => navigateTo('agents'));
-      controls.append(addAgents);
+    const myId = state.session?.user?.id;
+    const takenByMe = ticket.assigned_agent_id === myId;
+    if (takenByMe) {
+      const mine = document.createElement('option');
+      mine.value = myId;
+      mine.textContent = 'Vos (propietario)';
+      assignment.append(mine);
+    }
+    if (!activeAgents.length && !takenByMe) unassigned.textContent = 'Sin asignar · sin agentes activos';
+    if (!takenByMe && !['resolved', 'closed'].includes(ticket.status)) {
+      const take = element('button', 'text-button agents-link', 'Tomar ticket');
+      take.type = 'button';
+      take.disabled = state.busy;
+      take.addEventListener('click', () => claimTicket(ticket.id));
+      controls.append(take);
     }
     const historicalAgent = state.agents.find((agent) => agent.user_id === ticket.assigned_agent_id && agent.removed_at);
     if (historicalAgent) {
@@ -567,7 +578,9 @@ function renderDetail(ticket) {
     }
     assignment.value = ticket.assigned_agent_id || '';
     assignment.disabled = state.busy;
-    assignment.addEventListener('change', () => assignTicket(ticket.id, assignment.value || null));
+    assignment.addEventListener('change', () => (assignment.value === myId
+      ? claimTicket(ticket.id)
+      : assignTicket(ticket.id, assignment.value || null)));
     controls.append(assignment);
   }
   const status = document.createElement('select');
@@ -974,6 +987,23 @@ async function assignTicket(ticketId, agentId) {
     return;
   }
   setFeedback('', agentId ? 'Ticket asignado.' : 'Ticket devuelto a la cola para su reasignación.');
+  await Promise.all([loadTickets(), loadAgents(), loadDashboardStats()]);
+}
+
+async function claimTicket(ticketId) {
+  const userId = state.session?.user?.id;
+  state.busy = true;
+  setFeedback();
+  renderDashboard();
+  const { error } = await state.supabase.rpc('claim_support_ticket', { p_ticket_id: ticketId });
+  if (userId !== state.session?.user?.id) return;
+  state.busy = false;
+  if (error) {
+    setFeedback(userFacingError(error, 'No pudimos tomar el ticket. Probá de nuevo.'));
+    renderDashboard();
+    return;
+  }
+  setFeedback('', 'Tomaste el ticket.');
   await Promise.all([loadTickets(), loadAgents(), loadDashboardStats()]);
 }
 
