@@ -77,6 +77,7 @@ const state = {
   selectedId: null,
   filter: 'open',
   showDetails: readDetailsPref(),
+  quickMenuOpen: false,
   ticketSearch: '',
   ticketSort: 'recent',
   ticketLimit: TICKET_PAGE_SIZE,
@@ -578,18 +579,67 @@ function renderTicketRow(ticket) {
   return button;
 }
 
-function renderMessage(message) {
+const startOfDay = (value) => {
+  const date = new Date(value);
+  date.setHours(0, 0, 0, 0);
+  return date;
+};
+
+function formatDay(value) {
+  const days = Math.round((startOfDay(Date.now()) - startOfDay(value)) / 86400000);
+  if (days === 0) return 'Hoy';
+  if (days === 1) return 'Ayer';
+  const date = new Date(value);
+  const options = { weekday: 'long', day: 'numeric', month: 'long' };
+  if (date.getFullYear() !== new Date().getFullYear()) options.year = 'numeric';
+  const label = new Intl.DateTimeFormat('es-AR', options).format(date);
+  return label.charAt(0).toLocaleUpperCase('es-AR') + label.slice(1);
+}
+
+function formatTime(value) {
+  return new Intl.DateTimeFormat('es-AR', { hour: '2-digit', minute: '2-digit' }).format(new Date(value));
+}
+
+function renderThread(thread, ticket) {
+  let previous = null;
+  state.messages.forEach((message) => {
+    const newDay = !previous || startOfDay(previous.created_at).getTime() !== startOfDay(message.created_at).getTime();
+    if (newDay) {
+      const divider = element('div', 'thread-day');
+      divider.append(element('span', '', formatDay(message.created_at)));
+      thread.append(divider);
+    }
+    // Mensajes seguidos de la misma persona en pocos minutos se agrupan, como en cualquier chat.
+    const grouped = !newDay
+      && previous.author_role === message.author_role
+      && previous.author_id === message.author_id
+      && new Date(message.created_at) - new Date(previous.created_at) < 5 * 60000;
+    thread.append(renderMessage(message, ticket, grouped));
+    previous = message;
+  });
+}
+
+function renderMessage(message, ticket, grouped) {
   const fromSupport = message.author_role === 'support';
-  const bubble = element('article', `message${fromSupport ? ' from-support' : ''}`);
   const member = fromSupport ? teamMember(message.author_id) : null;
-  const head = element('div', 'message-head');
-  const author = element('span', 'message-author');
-  if (member) author.append(renderAvatar(memberName(member), member.avatar_path, 'xs'));
-  author.append(element('strong', '', fromSupport ? memberName(member) : 'Usuario'));
-  head.append(author);
-  head.append(element('time', '', formatDate(message.created_at)));
-  bubble.append(head, element('p', 'message-body', message.body));
-  return bubble;
+  const name = fromSupport ? memberName(member) : (ticket.client_name || 'Cliente');
+  const row = element('article', `msg${fromSupport ? ' from-support' : ''}${grouped ? ' is-grouped' : ''}`);
+  const avatarSlot = element('div', 'msg-avatar');
+  if (!grouped) avatarSlot.append(renderAvatar(name, member?.avatar_path, 'sm'));
+  const stack = element('div', 'msg-stack');
+  if (!grouped) {
+    const meta = element('div', 'msg-meta');
+    const time = element('time', '', formatTime(message.created_at));
+    time.dateTime = message.created_at;
+    time.title = formatDate(message.created_at);
+    meta.append(element('strong', '', name), time);
+    stack.append(meta);
+  }
+  const bubble = element('p', 'msg-bubble', message.body);
+  bubble.title = formatDate(message.created_at);
+  stack.append(bubble);
+  row.append(avatarSlot, stack);
+  return row;
 }
 
 function renderClientPanel(ticket, manage) {
@@ -755,25 +805,37 @@ function renderDetail(ticket) {
 
   const thread = element('div', 'thread');
   thread.dataset.ticketId = ticket.id;
-  state.messages.forEach((message) => thread.append(renderMessage(message)));
+  renderThread(thread, ticket);
   if (!state.messages.length) thread.append(element('p', 'muted thread-empty', 'Todavía no hay mensajes.'));
   const split = element('div', state.showDetails ? 'detail-split' : 'detail-split is-collapsed');
   const main = element('div', 'detail-main');
   main.append(thread);
 
-  const form = element('form', 'reply-form');  const quick = element('div', 'quick-replies');
+  const form = element('form', 'reply-form composer');
+  const box = element('div', 'composer-box');
+  const quickMenu = document.createElement('details');
+  quickMenu.className = 'quick-menu';
+  quickMenu.open = state.quickMenuOpen;
+  quickMenu.addEventListener('toggle', () => { state.quickMenuOpen = quickMenu.open; });
+  const quickSummary = element('summary', 'tool-button');
+  quickSummary.title = 'Respuestas rápidas';
+  quickSummary.append(icon('bolt'), element('span', 'tool-label', 'Respuestas'));
+  const quick = element('div', 'quick-list');
   quick.setAttribute('role', 'group');
   quick.setAttribute('aria-label', 'Respuestas rápidas');
-  const aiButton = element('button', 'ai-button', '✨ Sugerir respuesta');
+  quickMenu.append(quickSummary, quick);
+  const aiButton = element('button', 'tool-button ai-button');
+  const aiLabel = element('span', 'tool-label', 'Sugerir con IA');
+  aiButton.append(element('span', 'ai-spark', '✨'), aiLabel);
   aiButton.type = 'button';
   aiButton.title = 'La IA arma un borrador para que lo revises. No se envía sola.';
   aiButton.disabled = state.busy;
-  const aiStatus = element('span', 'ai-status', 'Al enviar, el ticket pasa a “Esperamos respuesta”.');
+  const aiStatus = element('span', 'ai-status is-hint', 'Ctrl + Enter envía · el ticket pasa a “Esperamos respuesta”');
   aiStatus.setAttribute('role', 'status');
   const textarea = document.createElement('textarea');
-  textarea.className = 'text-input reply-input';
+  textarea.className = 'reply-input';
   textarea.name = 'reply';
-  textarea.rows = 2;
+  textarea.rows = 1;
   textarea.maxLength = 4000;
   textarea.required = true;
   const firstName = String(ticket.client_name || '').trim().split(/\s+/)[0];
@@ -797,12 +859,14 @@ function renderDetail(ticket) {
     }
   });
   quickReplies.forEach(([name, text]) => {
-    const chip = element('button', 'quick-reply', name);
+    const chip = element('button', 'quick-item');
     chip.type = 'button';
     chip.disabled = state.busy;
+    chip.append(element('strong', '', name), element('span', '', text));
     chip.addEventListener('click', () => {
       const current = textarea.value.trim();
       textarea.value = current ? `${current}\n\n${text}` : text;
+      quickMenu.open = false;
       textarea.dispatchEvent(new Event('input'));
       textarea.focus();
       textarea.setSelectionRange(textarea.value.length, textarea.value.length);
@@ -812,13 +876,13 @@ function renderDetail(ticket) {
   aiButton.addEventListener('click', async () => {
     aiButton.disabled = true;
     aiButton.classList.add('is-thinking');
-    aiButton.textContent = '✨ Pensando…';
-    aiStatus.classList.remove('is-error');
+    aiLabel.textContent = 'Pensando…';
+    aiStatus.classList.remove('is-error', 'is-hint');
     aiStatus.textContent = 'Leyendo la conversación…';
     const result = await requestAiDraft(ticket.id);
     aiButton.disabled = state.busy;
     aiButton.classList.remove('is-thinking');
-    aiButton.textContent = '✨ Sugerir respuesta';
+    aiLabel.textContent = 'Sugerir con IA';
     if (result.error) {
       aiStatus.classList.add('is-error');
       aiStatus.textContent = result.error;
@@ -833,13 +897,15 @@ function renderDetail(ticket) {
       aiStatus.textContent = 'Borrador listo. Revisalo y completá lo que diga [completar] antes de enviar.';
     }
   });
-  const bar = element('div', 'composer-bar');
-  const send = element('button', 'primary-button send-button', state.busy ? 'Enviando…' : 'Enviar');
+  const bar = element('div', 'composer-tools');
+  const send = element('button', 'primary-button send-button');
+  send.append(element('span', '', state.busy ? 'Enviando…' : 'Enviar'), icon('arrow', 'send-icon'));
   send.type = 'submit';
   send.title = 'Ctrl + Enter';
   send.disabled = state.busy;
-  bar.append(aiButton, aiStatus, element('kbd', 'reply-hint', 'Ctrl + Enter'), send);
-  form.append(quick, textarea, bar);
+  bar.append(quickMenu, aiButton, aiStatus, send);
+  box.append(textarea, bar);
+  form.append(box);
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
     await sendReply(ticket.id, new FormData(form).get('reply')?.toString().trim());
@@ -2159,6 +2225,12 @@ document.addEventListener('keydown', (event) => {
     return;
   }
   if (isPaletteOpen() || event.ctrlKey || event.metaKey || event.altKey || state.page !== 'tickets') return;
+  const openMenu = app.querySelector('details.quick-menu[open]');
+  if (event.key === 'Escape' && openMenu) {
+    openMenu.open = false;
+    openMenu.querySelector('summary')?.focus();
+    return;
+  }
   if (event.key === 'Escape' && state.showDetails && !isWideDetails()) {
     state.showDetails = false;
     renderDashboard();
@@ -2174,6 +2246,12 @@ document.addEventListener('keydown', (event) => {
     event.preventDefault();
     app.querySelector('.ticket-search')?.focus();
   } else if (event.key === 'Escape' && state.selectedId) closeTicket();
+});
+
+document.addEventListener('click', (event) => {
+  app.querySelectorAll('details.quick-menu[open]').forEach((menu) => {
+    if (!menu.contains(event.target)) menu.open = false;
+  });
 });
 
 window.matchMedia('(min-width: 1280px)').addEventListener('change', () => {
@@ -2376,6 +2454,7 @@ async function loadMessages(ticketId) {
 async function selectTicket(ticketId) {
   const pageChanged = state.page !== 'tickets';
   state.selectedId = ticketId;
+  state.quickMenuOpen = false;
   state.error = '';
   state.page = 'tickets';
   syncRoute();
