@@ -1,5 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
+import '@fontsource-variable/inter';
 import './style.css';
+import { icon } from './icons.js';
 import { closePalette, isPaletteOpen, openPalette } from './palette.js';
 import { createLiveChannel } from './realtime.js';
 
@@ -946,10 +948,10 @@ function renderAgentManagement(content) {
 
   const metrics = element('section', 'team-metrics');
   metrics.append(
-    renderAgentMetric('Accesos activos', activeAgents.length, 'Personas habilitadas', 'team-metric-active'),
-    renderAgentMetric('Disponibles', availableAgents.length, 'Pueden recibir tickets', 'team-metric-ready'),
-    renderAgentMetric('En pausa', activeAgents.length - availableAgents.length, 'Sin nuevas asignaciones', 'team-metric-paused'),
-    renderAgentMetric('Casos activos', activeTickets, 'Asignados al equipo', 'team-metric-tickets')
+    renderAgentMetric('Accesos activos', activeAgents.length, 'Personas habilitadas', 'team-metric-active', 'shield'),
+    renderAgentMetric('Disponibles', availableAgents.length, 'Pueden recibir tickets', 'team-metric-ready', 'check'),
+    renderAgentMetric('En pausa', activeAgents.length - availableAgents.length, 'Sin nuevas asignaciones', 'team-metric-paused', 'pause'),
+    renderAgentMetric('Casos activos', activeTickets, 'Asignados al equipo', 'team-metric-tickets', 'ticket')
   );
   content.append(metrics);
 
@@ -1089,10 +1091,14 @@ function renderAgentManagement(content) {
   content.append(list);
 }
 
-function renderAgentMetric(label, value, detail, accent) {
+function renderAgentMetric(label, value, detail, accent, iconName = 'users') {
   const card = element('article', `team-metric ${accent}`);
+  const top = element('div', 'stat-top');
+  const chip = element('span', 'stat-icon');
+  chip.append(icon(iconName));
+  top.append(element('span', 'team-metric-label', label), chip);
   card.append(
-    element('span', 'team-metric-label', label),
+    top,
     element('strong', 'team-metric-value', Number(value || 0).toLocaleString('es-AR')),
     element('span', 'team-metric-detail', detail)
   );
@@ -1378,12 +1384,23 @@ async function loadDashboardStats() {
   renderDashboard();
 }
 
-function renderStatCard(label, value, detail, accent = '') {
+function renderStatCard(label, value, detail, accent = '', iconName = 'ticket') {
   const card = element('article', `stat-card${accent ? ` ${accent}` : ''}`);
-  card.append(element('span', 'stat-label', label));
+  const top = element('div', 'stat-top');
+  const chip = element('span', 'stat-icon');
+  chip.append(icon(iconName));
+  top.append(element('span', 'stat-label', label), chip);
+  card.append(top);
   card.append(element('strong', 'stat-value', Number(value || 0).toLocaleString('es-AR')));
   card.append(element('span', 'stat-detail', detail));
   return card;
+}
+
+function greetingFor(date = new Date()) {
+  const hour = date.getHours();
+  if (hour >= 6 && hour < 13) return 'Buen día';
+  if (hour >= 13 && hour < 20) return 'Buenas tardes';
+  return 'Buenas noches';
 }
 
 function renderDailyChart(days) {
@@ -1493,20 +1510,43 @@ function renderAgentAvailability(stats) {
 
 function renderOverview(content) {
   const stats = state.dashboardStats;
-  const hero = element('section', 'overview-hero');
+  const hero = element('section', 'overview-hero overview-banner');
   const introduction = element('div', 'overview-intro');
+  const rawName = String(state.profile?.display_name || '').trim();
+  const firstName = rawName.includes('@') ? '' : rawName.split(/\s+/)[0];
+  const today = new Intl.DateTimeFormat('es-AR', { weekday: 'long', day: 'numeric', month: 'long' }).format(new Date());
+  const pending = Number(stats?.active) || 0;
+  const unassigned = state.role === 'owner' ? Number(stats?.unassigned) || 0 : 0;
+  let summary = 'Cargando cómo viene el día…';
+  if (stats) {
+    summary = pending
+      ? `${pending} ${pending === 1 ? 'ticket necesita' : 'tickets necesitan'} atención${unassigned ? ` y ${unassigned} ${unassigned === 1 ? 'espera' : 'esperan'} asignación` : ''}.`
+      : 'Bandeja al día. No hay tickets que requieran atención.';
+  }
+  const meta = element('div', 'banner-meta');
+  meta.append(element('span', 'banner-date', today));
+  const live = element('span', `live-pill${state.liveOk ? ' is-live' : ''}`);
+  live.append(element('span', 'live-pill-dot'), element('span', '', state.liveOk ? 'En vivo' : 'Sincronizando'));
+  meta.append(live);
   introduction.append(
-    element('p', 'eyebrow', state.role === 'owner' ? 'PANEL DE CONTROL' : 'TU ESPACIO DE SOPORTE'),
-    element('h1', '', state.role === 'owner' ? 'Resumen general' : 'Tu resumen'),
-    element('p', 'overview-subtitle', state.role === 'owner'
-      ? 'Una vista clara de la bandeja, el equipo y lo que necesita atención.'
-      : 'Tus casos asignados y la actividad reciente, en un solo lugar.')
+    meta,
+    element('h1', '', firstName ? `${greetingFor()}, ${firstName}` : greetingFor()),
+    element('p', 'overview-subtitle', summary)
   );
-  const refresh = element('button', 'overview-refresh', '↻  Actualizar');
+  const actions = element('div', 'banner-actions');
+  const goInbox = element('button', 'banner-primary');
+  goInbox.type = 'button';
+  goInbox.append(icon('inbox'), element('span', '', 'Ir a la bandeja'), icon('arrow', 'banner-arrow'));
+  goInbox.addEventListener('click', () => navigateTo('tickets'));
+  const refresh = element('button', 'overview-refresh');
   refresh.type = 'button';
+  refresh.title = 'Actualizar';
+  refresh.setAttribute('aria-label', 'Actualizar');
+  refresh.append(icon('refresh'));
   refresh.disabled = state.busy;
   refresh.addEventListener('click', refreshDashboard);
-  hero.append(introduction, refresh);
+  actions.append(goInbox, refresh);
+  hero.append(introduction, actions);
   content.append(hero);
   renderFeedback(content);
 
@@ -1518,13 +1558,13 @@ function renderOverview(content) {
   const activeTickets = Number(stats.active) || 0;
   const metrics = element('section', 'overview-metrics');
   metrics.append(
-    renderStatCard('Tickets en tu bandeja', stats.total, `${Number(stats.created_today) || 0} nuevos hoy`, 'stat-total'),
-    renderStatCard('Requieren atención', activeTickets, `${Number(stats.open) || 0} sin revisar`, 'stat-active'),
-    renderStatCard('Esperando respuesta', stats.waiting_on_user, 'Pendientes del usuario', 'stat-waiting'),
-    renderStatCard('Nuevos en 7 días', stats.created_last_7_days, 'Última semana', 'stat-new')
+    renderStatCard('Tickets en tu bandeja', stats.total, `${Number(stats.created_today) || 0} nuevos hoy`, 'stat-total', 'ticket'),
+    renderStatCard('Requieren atención', activeTickets, `${Number(stats.open) || 0} sin revisar`, 'stat-active', 'bolt'),
+    renderStatCard('Esperando respuesta', stats.waiting_on_user, 'Pendientes del usuario', 'stat-waiting', 'clock'),
+    renderStatCard('Nuevos en 7 días', stats.created_last_7_days, 'Última semana', 'stat-new', 'trend')
   );
   if (state.role === 'owner') {
-    metrics.append(renderStatCard('Sin asignar', stats.unassigned, 'En la cola general', 'stat-unassigned'));
+    metrics.append(renderStatCard('Sin asignar', stats.unassigned, 'En la cola general', 'stat-unassigned', 'queue'));
   }
   content.append(metrics);
 
@@ -1668,44 +1708,50 @@ function renderDashboard() {
   const cmdButton = element('button', 'cmd-button');
   cmdButton.type = 'button';
   cmdButton.setAttribute('aria-label', 'Abrir la paleta de comandos');
-  cmdButton.append(element('span', 'cmd-label', 'Buscar o ejecutar…'), element('kbd', '', 'Ctrl K'));
+  cmdButton.append(icon('search', 'cmd-icon'), element('span', 'cmd-label', 'Buscar o ejecutar…'), element('kbd', '', 'Ctrl K'));
   cmdButton.addEventListener('click', () => openPalette(buildCommands));
   const myName = state.profile?.display_name || state.session?.user?.email || 'Agente';
+  const accountCard = element('div', 'account-card');
   const me = element('button', `account-chip${state.page === 'profile' ? ' active' : ''}`);
   me.type = 'button';
-  me.setAttribute('aria-label', 'Mi perfil');
+  me.title = 'Mi perfil';
+  me.setAttribute('aria-label', `Mi perfil: ${myName}`);
   if (state.page === 'profile') me.setAttribute('aria-current', 'page');
-  me.append(renderAvatar(myName, state.profile?.avatar_path, 'sm'), element('span', 'account-email', myName));
+  const meText = element('span', 'account-meta');
+  meText.append(
+    element('span', 'account-name', myName),
+    element('span', 'account-role', state.role === 'owner' ? 'Propietario' : 'Agente de soporte')
+  );
+  me.append(renderAvatar(myName, state.profile?.avatar_path, 'sm'), meText);
   me.addEventListener('click', () => navigateTo('profile'));
-  account.append(cmdButton, me);
+  const logout = element('button', 'logout-button');
+  logout.type = 'button';
+  logout.title = 'Cerrar sesión';
+  logout.setAttribute('aria-label', 'Cerrar sesión');
+  logout.append(icon('logout'));
+  logout.addEventListener('click', signOut);
+  accountCard.append(me, logout);
+  account.append(cmdButton, accountCard);
   const nav = element('nav', 'header-nav');
-  const overview = element('button', state.page === 'overview' ? 'nav-button active' : 'nav-button', 'Resumen');
-  overview.type = 'button';
-  if (state.page === 'overview') overview.setAttribute('aria-current', 'page');
-  overview.addEventListener('click', () => navigateTo('overview'));
-  nav.append(overview);
-  const tickets = element('button', state.page === 'tickets' ? 'nav-button active' : 'nav-button', 'Tickets');
-  tickets.type = 'button';
+  nav.setAttribute('aria-label', 'Secciones');
+  const navButton = (page, label, iconName) => {
+    const button = element('button', state.page === page ? 'nav-button active' : 'nav-button');
+    button.type = 'button';
+    button.append(icon(iconName, 'nav-icon'), element('span', 'nav-label', label));
+    if (state.page === page) button.setAttribute('aria-current', 'page');
+    button.addEventListener('click', () => navigateTo(page));
+    nav.append(button);
+    return button;
+  };
+  navButton('overview', 'Resumen', 'overview');
+  const tickets = navButton('tickets', 'Tickets', 'inbox');
   const openCount = Number(state.dashboardStats?.open || 0);
   if (openCount) {
     tickets.append(element('span', 'nav-badge', openCount > 99 ? '99+' : String(openCount)));
     tickets.setAttribute('aria-label', `Tickets, ${openCount} ${openCount === 1 ? 'abierto' : 'abiertos'}`);
   }
-  if (state.page === 'tickets') tickets.setAttribute('aria-current', 'page');
-  tickets.addEventListener('click', () => navigateTo('tickets'));
-  nav.append(tickets);
-  if (state.role === 'owner') {
-    const agents = element('button', state.page === 'agents' ? 'nav-button active' : 'nav-button', 'Usuarios');
-    agents.type = 'button';
-    if (state.page === 'agents') agents.setAttribute('aria-current', 'page');
-    agents.addEventListener('click', () => navigateTo('agents'));
-    nav.append(agents);
-  }
-  header.append(brand, nav);
-  const logout = element('button', 'text-button', 'Salir');
-  logout.addEventListener('click', signOut);
-  account.append(logout);
-  header.append(account);
+  if (state.role === 'owner') navButton('agents', 'Usuarios', 'users');
+  header.append(brand, element('span', 'nav-caption', 'MENÚ'), nav, account);
   shell.append(header);
 
   const content = element('main', 'dashboard-main');
@@ -1757,7 +1803,8 @@ function renderDashboard() {
     state.ticketSearch = search.value;
     renderTicketResults(list, listHeading);
   });
-  const refresh = element('button', 'icon-button', '↻');
+  const refresh = element('button', 'icon-button');
+  refresh.append(icon('refresh'));
   refresh.type = 'button';
   refresh.setAttribute('aria-label', 'Actualizar tickets');
   refresh.title = 'Actualizar';
@@ -2116,6 +2163,7 @@ function startLive() {
     },
     onStatus: (ok) => {
       state.liveOk = ok;
+      paintLivePill();
       // Al reconectar pudimos perdernos cambios.
       if (ok) void pollSupport();
     },
@@ -2127,6 +2175,14 @@ function stopLive() {
   state.live = null;
   state.liveOk = false;
   state.viewers = {};
+}
+
+function paintLivePill() {
+  const pill = app.querySelector('.live-pill');
+  if (!pill) return;
+  pill.classList.toggle('is-live', state.liveOk);
+  const label = pill.lastElementChild;
+  if (label) label.textContent = state.liveOk ? 'En vivo' : 'Sincronizando';
 }
 
 function viewersOf(ticketId) {
