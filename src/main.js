@@ -85,6 +85,10 @@ const state = {
   ticketsLoaded: false,
   loadingMore: false,
   drafts: {},
+  activity: [],
+  composerMode: 'reply',
+  noteDrafts: {},
+  threadView: 'all',
   unseenTickets: 0,
   pollTimer: null,
   polling: false,
@@ -539,6 +543,7 @@ function renderMfaFailure() {
 function renderAccessCheck() {
   state.tickets = [];
   state.messages = [];
+  state.activity = [];
   state.agents = [];
   state.dashboardStats = null;
   state.messageRequest += 1;
@@ -600,23 +605,127 @@ function formatTime(value) {
   return new Intl.DateTimeFormat('es-AR', { hour: '2-digit', minute: '2-digit' }).format(new Date(value));
 }
 
+function threadItems() {
+  const view = state.threadView;
+  const items = [];
+  if (view !== 'notes') state.messages.forEach((message) => items.push({ type: 'message', ...message }));
+  state.activity.forEach((entry) => {
+    if (view === 'notes' && entry.kind !== 'note') return;
+    if (view === 'chat') return;
+    items.push({ type: entry.kind, ...entry });
+  });
+  return items.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+}
+
 function renderThread(thread, ticket) {
   let previous = null;
-  state.messages.forEach((message) => {
-    const newDay = !previous || startOfDay(previous.created_at).getTime() !== startOfDay(message.created_at).getTime();
+  let previousDay = null;
+  threadItems().forEach((item) => {
+    const day = startOfDay(item.created_at).getTime();
+    const newDay = day !== previousDay;
     if (newDay) {
       const divider = element('div', 'thread-day');
-      divider.append(element('span', '', formatDay(message.created_at)));
+      divider.append(element('span', '', formatDay(item.created_at)));
       thread.append(divider);
+      previousDay = day;
     }
-    // Mensajes seguidos de la misma persona en pocos minutos se agrupan, como en cualquier chat.
-    const grouped = !newDay
-      && previous.author_role === message.author_role
-      && previous.author_id === message.author_id
-      && new Date(message.created_at) - new Date(previous.created_at) < 5 * 60000;
-    thread.append(renderMessage(message, ticket, grouped));
-    previous = message;
+    if (item.type === 'note') thread.append(renderNote(item));
+    else if (item.type !== 'message') thread.append(renderEvent(item));
+    else {
+      // Mensajes seguidos de la misma persona en pocos minutos se agrupan, como en cualquier chat.
+      const grouped = !newDay
+        && previous?.type === 'message'
+        && previous.author_role === item.author_role
+        && previous.author_id === item.author_id
+        && new Date(item.created_at) - new Date(previous.created_at) < 5 * 60000;
+      thread.append(renderMessage(item, ticket, grouped));
+    }
+    previous = item;
   });
+}
+
+function actorName(actorId) {
+  if (!actorId) return 'Sistema';
+  if (actorId === state.session?.user?.id) return 'Vos';
+  return memberName(teamMember(actorId), 'Alguien del equipo');
+}
+
+function renderNote(note) {
+  const name = actorName(note.actor_id);
+  const member = teamMember(note.actor_id);
+  const row = element('article', 'thread-note');
+  row.setAttribute('aria-label', `Nota interna de ${name}`);
+  const head = element('header', 'note-head');
+  const time = element('time', '', formatTime(note.created_at));
+  time.dateTime = note.created_at;
+  time.title = formatDate(note.created_at);
+  const tag = element('span', 'note-tag');
+  tag.append(icon('lock'), element('span', '', 'Nota interna'));
+  head.append(renderAvatar(memberName(member, name), member?.avatar_path, 'xs'), element('strong', '', name), tag, time);
+  const body = element('p', 'note-body');
+  // Las menciones (@Nombre) se resaltan para que se vean de un vistazo.
+  String(note.body || '').split(/(@[\p{L}\p{N}_.-]+)/u).forEach((part) => {
+    if (!part) return;
+    body.append(part.startsWith('@') ? element('mark', 'note-mention', part) : document.createTextNode(part));
+  });
+  row.append(head, body);
+  return row;
+}
+
+function renderEvent(entry) {
+  const actor = actorName(entry.actor_id);
+  const detail = entry.detail || {};
+  const row = element('div', `thread-event event-${entry.kind}`);
+  const text = element('span', 'event-text');
+  if (entry.kind === 'status') {
+    text.append(`${actor === 'Sistema' ? 'El estado pasó' : `${actor} ${actor === 'Vos' ? 'pasaste' : 'pasó'} el ticket`} a `);
+    text.append(element('span', `status status-${detail.to}`, statusNames[detail.to] || detail.to || '—'));
+  } else if (!detail.to) {
+    text.textContent = `${actor} dejó el ticket sin asignar`;
+  } else if (!entry.actor_id) {
+    text.textContent = `Se asignó automáticamente a ${actorName(detail.to)}`;
+  } else if (detail.to === entry.actor_id) {
+    text.textContent = `${actor} ${actor === 'Vos' ? 'tomaste' : 'tomó'} el ticket`;
+  } else {
+    text.textContent = `${actor} ${actor === 'Vos' ? 'asignaste' : 'asignó'} el ticket a ${actorName(detail.to)}`;
+  }
+  const time = element('time', '', formatTime(entry.created_at));
+  time.dateTime = entry.created_at;
+  time.title = formatDate(entry.created_at);
+  row.append(icon(entry.kind === 'status' ? 'check' : 'swap', 'event-icon'), text, time);
+  return row;
+}
+
+function renderThreadFilter() {
+  const notes = state.activity.filter((entry) => entry.kind === 'note').length;
+  if (!notes) return null;
+  const bar = element('div', 'thread-filter');
+  bar.setAttribute('role', 'group');
+  bar.setAttribute('aria-label', 'Qué mostrar en la conversación');
+  [['all', 'Todo'], ['chat', 'Conversación'], ['notes', `Notas · ${notes}`]].forEach(([value, label]) => {
+    const option = element('button', `thread-filter-option${state.threadView === value ? ' is-active' : ''}`, label);
+    option.type = 'button';
+    option.setAttribute('aria-pressed', String(state.threadView === value));
+    option.addEventListener('click', () => {
+      state.threadView = value;
+      renderDashboard();
+    });
+    bar.append(option);
+  });
+  return bar;
+}
+
+function setComposerMode(mode) {
+  if (state.composerMode === mode) {
+    app.querySelector('.reply-input')?.focus();
+    return;
+  }
+  state.composerMode = mode;
+  state.quickMenuOpen = false;
+  renderDashboard();
+  const input = app.querySelector('.reply-input');
+  input?.focus();
+  input?.setSelectionRange(input.value.length, input.value.length);
 }
 
 function renderMessage(message, ticket, grouped) {
@@ -806,12 +915,31 @@ function renderDetail(ticket) {
   const thread = element('div', 'thread');
   thread.dataset.ticketId = ticket.id;
   renderThread(thread, ticket);
-  if (!state.messages.length) thread.append(element('p', 'muted thread-empty', 'Todavía no hay mensajes.'));
+  if (!state.messages.length && !state.activity.length) thread.append(element('p', 'muted thread-empty', 'Todavía no hay mensajes.'));
   const split = element('div', state.showDetails ? 'detail-split' : 'detail-split is-collapsed');
   const main = element('div', 'detail-main');
+  const threadFilter = renderThreadFilter();
+  if (threadFilter) main.append(threadFilter);
   main.append(thread);
 
-  const form = element('form', 'reply-form composer');
+  const noteMode = state.composerMode === 'note';
+  const drafts = noteMode ? state.noteDrafts : state.drafts;
+  const form = element('form', `reply-form composer${noteMode ? ' is-note' : ''}`);
+  const modes = element('div', 'composer-modes');
+  modes.setAttribute('role', 'tablist');
+  modes.setAttribute('aria-label', 'Tipo de mensaje');
+  [['reply', 'Responder', 'reply', 'R'], ['note', 'Nota interna', 'lock', 'N']].forEach(([value, label, glyph, key]) => {
+    const tab = element('button', `composer-mode${state.composerMode === value ? ' is-active' : ''}`);
+    tab.type = 'button';
+    tab.setAttribute('role', 'tab');
+    tab.setAttribute('aria-selected', String(state.composerMode === value));
+    tab.title = `${label} (${key})`;
+    tab.append(icon(glyph), element('span', '', label));
+    if (value === 'note' && state.noteDrafts[ticket.id]) tab.append(element('span', 'mode-dot', ''));
+    if (value === 'reply' && state.drafts[ticket.id]) tab.append(element('span', 'mode-dot', ''));
+    tab.addEventListener('click', () => setComposerMode(value));
+    modes.append(tab);
+  });
   const box = element('div', 'composer-box');
   const quickMenu = document.createElement('details');
   quickMenu.className = 'quick-menu';
@@ -830,25 +958,29 @@ function renderDetail(ticket) {
   aiButton.type = 'button';
   aiButton.title = 'La IA arma un borrador para que lo revises. No se envía sola.';
   aiButton.disabled = state.busy;
-  const aiStatus = element('span', 'ai-status is-hint', 'Ctrl + Enter envía · el ticket pasa a “Esperamos respuesta”');
+  const aiStatus = element('span', 'ai-status is-hint', noteMode
+    ? 'Solo la ve el equipo · el cliente nunca la recibe'
+    : 'Ctrl + Enter envía · el ticket pasa a “Esperamos respuesta”');
   aiStatus.setAttribute('role', 'status');
   const textarea = document.createElement('textarea');
   textarea.className = 'reply-input';
   textarea.name = 'reply';
   textarea.rows = 1;
-  textarea.maxLength = 4000;
+  textarea.maxLength = noteMode ? 2000 : 4000;
   textarea.required = true;
   const firstName = String(ticket.client_name || '').trim().split(/\s+/)[0];
-  textarea.placeholder = firstName ? `Escribile a ${firstName}…` : 'Escribile al usuario…';
-  textarea.setAttribute('aria-label', 'Respuesta');
-  textarea.value = state.drafts[ticket.id] || '';
+  textarea.placeholder = noteMode
+    ? 'Dejá contexto para el equipo. Podés mencionar con @nombre…'
+    : (firstName ? `Escribile a ${firstName}…` : 'Escribile al usuario…');
+  textarea.setAttribute('aria-label', noteMode ? 'Nota interna' : 'Respuesta');
+  textarea.value = drafts[ticket.id] || '';
   const fitTextarea = () => {
     textarea.style.height = 'auto';
     textarea.style.height = `${textarea.scrollHeight + 2}px`;
   };
   textarea.addEventListener('input', () => {
-    if (textarea.value) state.drafts[ticket.id] = textarea.value;
-    else delete state.drafts[ticket.id];
+    if (textarea.value) drafts[ticket.id] = textarea.value;
+    else delete drafts[ticket.id];
     fitTextarea();
   });
   if (textarea.value) requestAnimationFrame(fitTextarea);
@@ -899,16 +1031,20 @@ function renderDetail(ticket) {
   });
   const bar = element('div', 'composer-tools');
   const send = element('button', 'primary-button send-button');
-  send.append(element('span', '', state.busy ? 'Enviando…' : 'Enviar'), icon('arrow', 'send-icon'));
+  const sendLabel = noteMode ? 'Guardar nota' : 'Enviar';
+  send.append(element('span', '', state.busy ? (noteMode ? 'Guardando…' : 'Enviando…') : sendLabel), icon(noteMode ? 'lock' : 'arrow', 'send-icon'));
   send.type = 'submit';
   send.title = 'Ctrl + Enter';
   send.disabled = state.busy;
-  bar.append(quickMenu, aiButton, aiStatus, send);
+  if (noteMode) bar.append(aiStatus, send);
+  else bar.append(quickMenu, aiButton, aiStatus, send);
   box.append(textarea, bar);
-  form.append(box);
+  form.append(modes, box);
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
-    await sendReply(ticket.id, new FormData(form).get('reply')?.toString().trim());
+    const body = new FormData(form).get('reply')?.toString().trim();
+    if (noteMode) await addNote(ticket.id, body);
+    else await sendReply(ticket.id, body);
   });
   main.append(form);
   split.append(main);
@@ -1468,7 +1604,7 @@ async function assignTicket(ticketId, agentId) {
     return;
   }
   setFeedback('', agentId ? 'Ticket asignado.' : 'Ticket devuelto a la cola para su reasignación.');
-  await Promise.all([loadTickets(), loadAgents(), loadDashboardStats()]);
+  await Promise.all([loadTickets(), loadAgents(), loadDashboardStats(), state.selectedId === ticketId ? loadMessages(ticketId) : null]);
 }
 
 async function claimTicket(ticketId) {
@@ -1485,7 +1621,7 @@ async function claimTicket(ticketId) {
     return;
   }
   setFeedback('', 'Tomaste el ticket.');
-  await Promise.all([loadTickets(), loadAgents(), loadDashboardStats()]);
+  await Promise.all([loadTickets(), loadAgents(), loadDashboardStats(), state.selectedId === ticketId ? loadMessages(ticketId) : null]);
 }
 
 async function loadDashboardStats() {
@@ -1805,6 +1941,7 @@ function closeTicket() {
   }
   state.selectedId = null;
   state.messages = [];
+  state.activity = [];
   syncRoute({ replace: true });
   renderDashboard();
 }
@@ -1835,6 +1972,7 @@ window.addEventListener('popstate', () => {
   applyRoute();
   if (state.role !== 'owner' && state.page === 'agents') state.page = 'overview';
   state.messages = [];
+  state.activity = [];
   renderDashboard();
   if (state.page === 'tickets' && state.selectedId) void loadMessages(state.selectedId);
 });
@@ -2147,6 +2285,7 @@ function isTypingInApp() {
 function insertQuickReply(ticketId, text) {
   const current = (state.drafts[ticketId] || '').trim();
   state.drafts[ticketId] = current ? `${current}\n\n${text}` : text;
+  state.composerMode = 'reply';
   renderDashboard();
   const area = app.querySelector('.reply-input');
   area?.focus();
@@ -2183,6 +2322,10 @@ function buildCommands() {
       && !['resolved', 'closed'].includes(ticket.status)
       && (state.role === 'owner' || !ticket.assigned_agent_id);
     if (canTake) items.push({ group: 'Este ticket', label: 'Tomar ticket', keywords: 'asignarme quedarme', featured: true, run: () => claimTicket(ticket.id) });
+    items.push(
+      { group: 'Este ticket', label: 'Escribir nota interna', hint: 'N', keywords: 'nota privada equipo susurro whisper', featured: true, run: () => setComposerMode('note') },
+      { group: 'Este ticket', label: 'Responder al cliente', hint: 'R', keywords: 'responder mensaje escribir', run: () => setComposerMode('reply') }
+    );
     statuses.filter(([value]) => value !== ticket.status).forEach(([value, label]) => {
       items.push({ group: 'Este ticket', label: `Marcar como: ${label}`, keywords: 'estado cambiar', featured: value === 'resolved', run: () => updateStatus(ticket.id, value) });
     });
@@ -2200,7 +2343,7 @@ function buildCommands() {
     });
   });
   items.push(
-    { group: 'Cuenta', label: 'Ver atajos de teclado', keywords: 'ayuda teclas', run: () => showToast('J / K: ticket siguiente o anterior · /: buscar · Esc: cerrar ticket · Ctrl K: paleta', '', null, 15000) },
+    { group: 'Cuenta', label: 'Ver atajos de teclado', keywords: 'ayuda teclas', run: () => showToast('J / K: ticket siguiente o anterior · R: responder · N: nota interna · /: buscar · Esc: cerrar ticket · Ctrl K: paleta', '', null, 15000) },
     { group: 'Cuenta', label: 'Salir', keywords: 'cerrar sesion logout', run: signOut }
   );
   return items;
@@ -2242,7 +2385,10 @@ document.addEventListener('keydown', (event) => {
   }
   if (event.key === 'j') stepTicket(1);
   else if (event.key === 'k') stepTicket(-1);
-  else if (event.key === '/') {
+  else if ((event.key === 'n' || event.key === 'r') && state.selectedId) {
+    event.preventDefault();
+    setComposerMode(event.key === 'n' ? 'note' : 'reply');
+  } else if (event.key === '/') {
     event.preventDefault();
     app.querySelector('.ticket-search')?.focus();
   } else if (event.key === 'Escape' && state.selectedId) closeTicket();
@@ -2291,20 +2437,18 @@ async function pollSupport() {
         return before && ticket.status === 'open' && before.last_message_at !== ticket.last_message_at;
       })
       : [];
-    const selectedChanged = Boolean(state.selectedId) && tickets.some((ticket) => ticket.id === state.selectedId
-      && previous.get(ticket.id)?.last_message_at !== ticket.last_message_at);
     state.tickets = tickets;
     state.ticketTotal = page.count ?? tickets.length;
     state.ticketsLoaded = true;
     if (state.selectedId && !tickets.some((ticket) => ticket.id === state.selectedId)) state.selectedId = null;
-    if (selectedChanged) {
-      const { data: messages, error } = await state.supabase
-        .from('support_ticket_messages')
-        .select('id, author_id, author_role, body, created_at')
-        .eq('ticket_id', state.selectedId)
-        .order('created_at', { ascending: true })
-        .limit(200);
-      if (!error && userId === state.session?.user?.id) state.messages = messages || [];
+    // La actividad (notas, estados, asignaciones) no mueve last_message_at: el hilo abierto se refresca siempre.
+    if (state.selectedId) {
+      const ticketId = state.selectedId;
+      const thread = await fetchThread(ticketId);
+      if (!thread.error && userId === state.session?.user?.id && state.selectedId === ticketId) {
+        state.messages = thread.messages;
+        state.activity = thread.activity;
+      }
     }
     await resolveAvatarUrls();
     if (fresh.length || replies.length) {
@@ -2425,17 +2569,31 @@ document.addEventListener('visibilitychange', () => {
   if (!document.hidden) void pollSupport();
 });
 
+async function fetchThread(ticketId) {
+  const [messages, activity] = await Promise.all([
+    state.supabase
+      .from('support_ticket_messages')
+      .select('id, author_id, author_role, body, created_at')
+      .eq('ticket_id', ticketId)
+      .order('created_at', { ascending: true })
+      .limit(200),
+    state.supabase
+      .from('support_ticket_activity')
+      .select('id, actor_id, kind, body, detail, created_at')
+      .eq('ticket_id', ticketId)
+      .order('created_at', { ascending: true })
+      .limit(200),
+  ]);
+  // Si la actividad falla, la conversación con el cliente se muestra igual.
+  return { error: messages.error, messages: messages.data || [], activity: activity.error ? [] : activity.data || [] };
+}
+
 async function loadMessages(ticketId) {
   if (!state.authorized) return;
   const requestId = ++state.messageRequest;
   const userId = state.session?.user?.id;
   void loadClientContext(ticketId);
-  const { data, error } = await state.supabase
-    .from('support_ticket_messages')
-    .select('id, author_id, author_role, body, created_at')
-    .eq('ticket_id', ticketId)
-    .order('created_at', { ascending: true })
-    .limit(200);
+  const { messages, activity, error } = await fetchThread(ticketId);
   if (
     state.selectedId !== ticketId
     || requestId !== state.messageRequest
@@ -2447,7 +2605,8 @@ async function loadMessages(ticketId) {
     renderDashboard();
     return;
   }
-  state.messages = data || [];
+  state.messages = messages;
+  state.activity = activity;
   renderDashboard();
 }
 
@@ -2455,12 +2614,14 @@ async function selectTicket(ticketId) {
   const pageChanged = state.page !== 'tickets';
   state.selectedId = ticketId;
   state.quickMenuOpen = false;
+  state.threadView = 'all';
   state.error = '';
   state.page = 'tickets';
   syncRoute();
   state.unseenTickets = 0;
   updateDocumentTitle();
   state.messages = [];
+  state.activity = [];
   renderDashboard();
   if (pageChanged) {
     app.querySelector('.dashboard-main')?.focus({ preventScroll: true });
@@ -2511,6 +2672,29 @@ async function sendReply(ticketId, body) {
   await Promise.all([loadTickets(), loadMessages(ticketId), loadDashboardStats()]);
 }
 
+async function addNote(ticketId, body) {
+  if (!body) return;
+  const userId = state.session?.user?.id;
+  state.busy = true;
+  setFeedback();
+  renderDashboard();
+  const { error } = await state.supabase.rpc('add_support_ticket_note', {
+    p_ticket_id: ticketId,
+    p_body: body,
+  });
+  if (userId !== state.session?.user?.id) return;
+  state.busy = false;
+  if (error) {
+    setFeedback(userFacingError(error, 'No pudimos guardar la nota. Probá de nuevo.'));
+    renderDashboard();
+    return;
+  }
+  setFeedback('', 'Nota guardada. Solo la ve el equipo.');
+  delete state.noteDrafts[ticketId];
+  if (state.threadView === 'chat') state.threadView = 'all';
+  await loadMessages(ticketId);
+}
+
 async function updateStatus(ticketId, status) {
   const userId = state.session?.user?.id;
   state.busy = true;
@@ -2524,7 +2708,7 @@ async function updateStatus(ticketId, status) {
   state.busy = false;
   if (error) setFeedback(userFacingError(error, 'No pudimos actualizar el estado. Probá de nuevo.'));
   else setFeedback('', 'Estado actualizado.');
-  await Promise.all([loadTickets(), loadDashboardStats()]);
+  await Promise.all([loadTickets(), loadDashboardStats(), state.selectedId === ticketId ? loadMessages(ticketId) : null]);
 }
 
 async function signOut() {
@@ -2540,6 +2724,7 @@ async function signOut() {
   state.authorized = false;
   state.tickets = [];
   state.messages = [];
+  state.activity = [];
   state.agents = [];
   state.dashboardStats = null;
   state.selectedId = null;
@@ -2563,6 +2748,7 @@ async function boot() {
     state.authorized = false;
     state.tickets = [];
     state.messages = [];
+    state.activity = [];
     state.agents = [];
     state.dashboardStats = null;
     state.messageRequest += 1;
@@ -2666,6 +2852,7 @@ if (!url || !publishableKey) {
       state.authorized = false;
       state.tickets = [];
       state.messages = [];
+      state.activity = [];
       state.agents = [];
       state.dashboardStats = null;
       state.selectedId = null;

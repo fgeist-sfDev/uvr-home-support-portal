@@ -1293,8 +1293,50 @@ body { background: #f2f4f1; }
   .composer .tool-label { display: none; }
 }
 
+/* Notas internas: color arena y borde punteado, centradas, nunca con forma de burbuja de chat. */
+.thread-note { width: min(100%, 680px); align-self: center; margin-top: 14px; padding: 10px 14px 12px; border: 1px dashed #dcbf7d; border-radius: 14px; background: repeating-linear-gradient(135deg, #fdf6e4 0 12px, #fbf1d9 12px 24px); color: #4a3a17; box-shadow: 0 2px 10px #8a64170d; }
+.note-head { display: flex; align-items: center; gap: 8px; color: #8a7444; font-size: 11.5px; }
+.note-head strong { color: #4a3a17; font-size: 12.5px; }
+.note-head time { margin-left: auto; }
+.note-tag { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px 2px 6px; border-radius: 999px; background: #f3e2b5; color: #7a5a12; font-size: 10.5px; font-weight: 800; letter-spacing: .02em; text-transform: uppercase; }
+.note-tag .icon { width: 11px; height: 11px; stroke-width: 2.2; }
+.note-body { margin: 6px 0 0; font-size: 13.5px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.note-mention { padding: 0 3px; border-radius: 4px; background: #f0d98f; color: #4a3a17; font-weight: 700; }
+
+/* Eventos de gestión: una línea chica y gris, para dar contexto sin competir con la conversación. */
+.thread-event { flex: none; align-self: stretch; display: flex; align-items: center; justify-content: center; gap: 7px; margin: 12px 0 0; padding: 0 12px; color: #7f8b84; font-size: 12px; text-align: center; }
+.thread-event::before,
+.thread-event::after { content: ''; flex: 0 1 64px; min-width: 12px; height: 1px; background: #e1e7e1; }
+.event-icon { flex: none; width: 14px; height: 14px; color: #9aa69f; }
+.event-text { flex: 0 1 auto; min-width: 0; display: inline-flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 5px; }
+.event-text .status { padding: 1px 8px; font-size: 11px; }
+.thread-event time { flex: none; color: #a3ada7; font-size: 11px; white-space: nowrap; }
+
+.thread-filter { flex: none; display: flex; justify-content: center; gap: 2px; margin: 0 auto; padding: 8px 0 0; }
+.thread-filter-option { min-height: 28px; padding: 0 12px; border: 0; border-radius: 999px; background: transparent; color: #66746b; font-size: 12px; font-weight: 700; cursor: pointer; }
+.thread-filter-option:hover { background: #edf2ec; color: #1d4a3e; }
+.thread-filter-option.is-active { background: #fff; color: #1d4a3e; box-shadow: 0 1px 4px #1a2e2414, inset 0 0 0 1px #e1e7e1; }
+.detail-main:has(.thread-filter) { background: #f6f8f5; }
+
+/* Pestañas del compositor: Responder (verde) o Nota interna (arena). */
+.composer-modes { display: flex; gap: 2px; margin: 0 0 6px 6px; }
+.composer-mode { position: relative; min-height: 28px; display: inline-flex; align-items: center; gap: 6px; padding: 0 11px; border: 0; border-radius: 8px; background: transparent; color: #75827a; font-size: 12px; font-weight: 700; cursor: pointer; }
+.composer-mode .icon { width: 14px; height: 14px; }
+.composer-mode:hover { background: #edf2ec; color: #1d4a3e; }
+.composer-mode.is-active { background: #e3eee8; color: #1d4a3e; }
+.composer.is-note .composer-mode.is-active { background: #f3e2b5; color: #6d5112; }
+.mode-dot { width: 6px; height: 6px; border-radius: 50%; background: #d39b2a; }
+.composer.is-note .composer-box { border: 1px dashed #d6b46a; background: #fffaf0; }
+.composer.is-note .composer-box:focus-within { border-color: #c79a3c; box-shadow: 0 0 0 3px #d39b2a24, 0 6px 22px #8a64170f; }
+.composer.is-note .reply-input::placeholder { color: #a99569; }
+.composer.is-note .ai-status { color: #9a8458; }
+.composer.is-note .send-button { background: #7a5a12; color: #fff; }
+.composer.is-note .send-button:hover:not(:disabled) { background: #654a0e; }
+
 @media (max-width: 860px) {
   .thread { padding-block: 4px 16px; }
+  .thread-event::before,
+  .thread-event::after { display: none; }
   .msg { max-width: 92%; gap: 8px; }
   .msg-avatar, .msg-avatar .avatar { width: 26px; }
   .msg-avatar .avatar { height: 26px; font-size: 10px; }

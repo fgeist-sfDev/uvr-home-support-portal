@@ -37,6 +37,7 @@ export function createLiveChannel({ supabase, userId, onChange, onPresence, onSt
     .channel('support-live', { config: { private: true, presence: { key: userId } } })
     .on('postgres_changes', { event: '*', schema: 'public', table: 'support_tickets' }, schedule)
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'support_ticket_messages' }, schedule)
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'support_ticket_activity' }, schedule)
     .on('presence', { event: 'sync' }, () => onPresence(viewers()))
     .subscribe((status) => {
       subscribed = status === 'SUBSCRIBED';
