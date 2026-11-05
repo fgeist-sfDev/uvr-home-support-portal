@@ -5,6 +5,19 @@ import './theme-dark.css';
 import { icon } from './icons.js';
 import { closePalette, isPaletteOpen, openPalette } from './palette.js';
 import { createLiveChannel } from './realtime.js';
+import {
+  disableNotify,
+  dismissNotifyOffer,
+  enableNotify,
+  isPortalInView,
+  loadNotifyPrefs,
+  notifyStatus,
+  resumeNotify,
+  shouldOfferNotify,
+  showDesktopNotice,
+  snoozedUntil,
+  snoozeNotify,
+} from './notify.js';
 
 const app = document.querySelector('#app');
 const statuses = [
@@ -20,6 +33,8 @@ const TICKET_PAGE_SIZE = 50;
 const POLL_INTERVAL_MS = 30000;
 // Con el canal en vivo conectado, el sondeo queda como red de seguridad.
 const LIVE_FALLBACK_MS = 120000;
+// Sin teclear durante este tiempo, el resto del equipo deja de ver "está escribiendo".
+const TYPING_IDLE_MS = 4000;
 const HOUR_MS = 3600000;
 const AVATAR_SIZE = 320;
 const MAX_AVATAR_SOURCE_BYTES = 8 * 1024 * 1024;
@@ -117,6 +132,8 @@ const state = {
   live: null,
   liveOk: false,
   viewers: {},
+  typing: {},
+  mentionsSince: null,
   page: 'overview',
   busy: false,
   error: '',
@@ -333,6 +350,224 @@ function showToast(message, actionLabel, onAction, duration = 12000) {
   toast.append(close);
   region.replaceChildren(toast);
   window.setTimeout(() => toast.remove(), duration);
+}
+
+// Avisos de escritorio: botón en el menú, menú desplegable, tarjeta en el resumen y comandos de la paleta.
+let notifyMenuOpen = false;
+const supportsPopover = typeof HTMLElement !== 'undefined' && 'popover' in HTMLElement.prototype;
+
+function isNotifyMenuOpen() {
+  return notifyMenuOpen;
+}
+
+function snoozeEndLabel() {
+  const until = new Date(snoozedUntil());
+  const sameDay = until.toDateString() === new Date().toDateString();
+  return `${sameDay ? '' : 'mañana '}${formatTime(until)}`;
+}
+
+// "p. m." ya termina en punto: evita el ".." al cerrar la oración.
+function endSentence(text) {
+  return text.endsWith('.') ? text : `${text}.`;
+}
+
+function untilTomorrowMorning() {
+  const morning = new Date();
+  morning.setDate(morning.getDate() + 1);
+  morning.setHours(9, 0, 0, 0);
+  return morning.getTime() - Date.now();
+}
+
+function notifyLabel(status) {
+  if (status === 'on') return 'Avisos activados';
+  if (status === 'snoozed') return `Silenciados hasta ${snoozeEndLabel()}`;
+  if (status === 'denied') return 'Avisos bloqueados';
+  return 'Activar avisos';
+}
+
+async function turnOnNotify() {
+  const status = await enableNotify();
+  if (state.authorized) renderDashboard();
+  if (status === 'on') {
+    showToast('Listo. Te avisamos de lo nuevo cuando no estés mirando el portal.', 'Probar', sendTestNotice, 8000);
+    void pollSupport();
+  } else if (status === 'denied') {
+    showToast('El navegador bloqueó los avisos. Podés habilitarlos desde el candado de la barra de direcciones.', '', null, 10000);
+  }
+}
+
+function setNotifyMode(action) {
+  if (action === 'snooze') snoozeNotify();
+  if (action === 'tomorrow') snoozeNotify(untilTomorrowMorning());
+  if (action === 'resume') resumeNotify();
+  if (action === 'off') disableNotify();
+  if (state.authorized) renderDashboard();
+  const messages = {
+    snooze: endSentence(`No molestar hasta ${snoozeEndLabel()}`),
+    tomorrow: endSentence(`No molestar hasta ${snoozeEndLabel()}`),
+    resume: 'Avisos reanudados.',
+    off: 'Avisos desactivados. Podés volver a activarlos desde el menú.',
+  };
+  showToast(messages[action], action === 'snooze' || action === 'tomorrow' ? 'Reanudar' : '', () => setNotifyMode('resume'), 6000);
+}
+
+function sendTestNotice() {
+  const sent = showDesktopNotice({
+    title: 'Así se ven los avisos',
+    body: 'Te vamos a avisar de tickets nuevos, respuestas de tus clientes y menciones del equipo.',
+    tag: 'uvr-test',
+    force: true,
+  });
+  if (!sent) showToast('Este navegador no muestra avisos desde una pestaña. Probá desde una computadora.', '', null, 8000);
+}
+
+function fillNotifyMenu(menu) {
+  const status = notifyStatus();
+  const descriptions = {
+    on: 'Te avisamos de tickets nuevos, respuestas de tus clientes y menciones, solo cuando no estás mirando el portal.',
+    snoozed: `${endSentence(`Silenciados hasta ${snoozeEndLabel()}`)} Mientras tanto, lo nuevo te espera en la bandeja.`,
+    off: 'Enterate de lo nuevo aunque estés en otra pestaña. Solo lo que te toca, nunca spam.',
+    denied: 'El navegador bloqueó los avisos para este sitio. Habilitalos desde el candado de la barra de direcciones y recargá la página.',
+  };
+  const head = element('div', 'notify-menu-head');
+  const badge = element('span', `notify-state is-${status}`, { on: 'Activos', snoozed: 'No molestar', off: 'Apagados', denied: 'Bloqueados' }[status] || '');
+  const titleRow = element('div', 'notify-menu-title');
+  titleRow.append(element('strong', '', 'Avisos de escritorio'), badge);
+  head.append(titleRow, element('p', '', descriptions[status] || ''));
+  const options = element('div', 'notify-options');
+  const option = (glyph, label, hint, run) => {
+    const button = element('button', 'notify-option');
+    button.type = 'button';
+    const text = element('span', 'notify-option-text');
+    text.append(element('span', '', label));
+    if (hint) text.append(element('small', '', hint));
+    button.append(icon(glyph), text);
+    button.addEventListener('click', () => {
+      if (supportsPopover) menu.hidePopover();
+      run();
+    });
+    options.append(button);
+  };
+  if (status === 'off') option('bell', 'Activar avisos', 'El navegador te va a pedir permiso', () => void turnOnNotify());
+  if (status === 'on') {
+    option('bellOff', 'No molestar 1 hora', 'Pausa los avisos y después vuelven solos', () => setNotifyMode('snooze'));
+    option('moon', 'No molestar hasta mañana', 'Se reanudan a las 9:00', () => setNotifyMode('tomorrow'));
+    option('test', 'Probar un aviso', '', sendTestNotice);
+  }
+  if (status === 'snoozed') option('bell', 'Reanudar avisos', '', () => setNotifyMode('resume'));
+  if (status === 'on' || status === 'snoozed') option('close', 'Desactivar avisos', '', () => setNotifyMode('off'));
+  menu.replaceChildren(head);
+  if (options.childElementCount) menu.append(options);
+}
+
+function placeNotifyMenu(menu, button) {
+  const rect = button.getBoundingClientRect();
+  const width = Math.min(300, window.innerWidth - 16);
+  const beside = window.innerWidth > 860 && rect.right < window.innerWidth / 3;
+  menu.style.width = `${width}px`;
+  if (beside) {
+    menu.style.left = `${rect.right + 12}px`;
+    menu.style.top = 'auto';
+    menu.style.bottom = `${Math.max(8, window.innerHeight - rect.bottom)}px`;
+  } else {
+    menu.style.left = `${Math.min(Math.max(8, rect.right - width), window.innerWidth - width - 8)}px`;
+    menu.style.top = `${rect.bottom + 8}px`;
+    menu.style.bottom = 'auto';
+  }
+}
+
+function renderNotifyControl() {
+  const status = notifyStatus();
+  if (status === 'unsupported') return null;
+  const fragment = document.createDocumentFragment();
+  const button = element('button', `cmd-button notify-button is-${status}`);
+  button.type = 'button';
+  const label = notifyLabel(status);
+  button.title = label;
+  button.setAttribute('aria-label', label);
+  const glyph = element('span', 'notify-glyph');
+  glyph.append(icon(status === 'on' || status === 'off' ? 'bell' : 'bellOff', 'cmd-icon'), element('span', 'notify-dot'));
+  button.append(glyph, element('span', 'cmd-label', status === 'snoozed' ? 'Avisos en pausa' : label));
+  fragment.append(button);
+  if (!supportsPopover) {
+    button.addEventListener('click', () => {
+      if (status === 'off') void turnOnNotify();
+      else if (status === 'on') setNotifyMode('snooze');
+      else if (status === 'snoozed') setNotifyMode('resume');
+      else showToast('El navegador bloqueó los avisos. Podés habilitarlos desde el candado de la barra de direcciones.', '', null, 10000);
+    });
+    return fragment;
+  }
+  const menu = element('div', 'notify-menu');
+  menu.id = 'notify-menu';
+  menu.popover = 'auto';
+  menu.setAttribute('role', 'dialog');
+  menu.setAttribute('aria-label', 'Avisos de escritorio');
+  button.popoverTargetElement = menu;
+  button.setAttribute('aria-haspopup', 'dialog');
+  button.setAttribute('aria-expanded', 'false');
+  menu.addEventListener('beforetoggle', (event) => {
+    if (event.newState !== 'open') return;
+    fillNotifyMenu(menu);
+    placeNotifyMenu(menu, button);
+  });
+  menu.addEventListener('toggle', (event) => {
+    notifyMenuOpen = event.newState === 'open';
+    button.setAttribute('aria-expanded', String(notifyMenuOpen));
+    button.classList.toggle('is-open', notifyMenuOpen);
+    if (notifyMenuOpen) menu.querySelector('.notify-option')?.focus();
+  });
+  fragment.append(menu);
+  return fragment;
+}
+
+function renderNotifyOffer() {
+  const card = element('section', 'notify-offer');
+  card.setAttribute('aria-label', 'Avisos de escritorio');
+  const glyph = element('span', 'notify-offer-icon');
+  glyph.append(icon('bell'));
+  const text = element('div', 'notify-offer-text');
+  text.append(
+    element('strong', '', 'Enterate al instante, aunque estés en otra pestaña'),
+    element('p', '', 'Te avisamos solo de lo que te toca: tickets nuevos, respuestas de tus clientes y menciones del equipo. Los silenciás cuando quieras.')
+  );
+  const actions = element('div', 'notify-offer-actions');
+  const later = element('button', 'text-button', 'Ahora no');
+  later.type = 'button';
+  later.addEventListener('click', () => {
+    dismissNotifyOffer();
+    card.remove();
+    showToast('Cuando quieras, activalos desde “Avisos” en el menú.', '', null, 6000);
+  });
+  const enable = element('button', 'primary-button');
+  enable.type = 'button';
+  enable.append(icon('bell'), element('span', '', 'Activar avisos'));
+  enable.addEventListener('click', () => void turnOnNotify());
+  actions.append(later, enable);
+  card.append(glyph, text, actions);
+  return card;
+}
+
+function notifyCommands() {
+  const status = notifyStatus();
+  const group = 'Avisos';
+  const keywords = 'notificaciones escritorio campana alertas';
+  if (status === 'off') return [{ group, label: 'Activar avisos de escritorio', keywords, run: () => void turnOnNotify() }];
+  if (status === 'on') {
+    return [
+      { group, label: 'No molestar 1 hora', keywords: `${keywords} silenciar pausar`, run: () => setNotifyMode('snooze') },
+      { group, label: 'No molestar hasta mañana', keywords: `${keywords} silenciar pausar`, run: () => setNotifyMode('tomorrow') },
+      { group, label: 'Probar un aviso de escritorio', keywords, run: sendTestNotice },
+      { group, label: 'Desactivar avisos de escritorio', keywords, run: () => setNotifyMode('off') },
+    ];
+  }
+  if (status === 'snoozed') {
+    return [
+      { group, label: 'Reanudar avisos', keywords: `${keywords} no molestar`, run: () => setNotifyMode('resume') },
+      { group, label: 'Desactivar avisos de escritorio', keywords, run: () => setNotifyMode('off') },
+    ];
+  }
+  return [];
 }
 
 function formatDate(value) {
@@ -1500,6 +1735,7 @@ function renderDetail(ticket) {
     }
     closeSlash();
     if (noteMode) {
+      stopTyping();
       void addNote(ticket.id, body);
       return;
     }
@@ -1517,12 +1753,15 @@ function renderDetail(ticket) {
       selectFillIn();
       return;
     }
+    stopTyping();
     queueReply(ticket, body, andNext, ready);
   };
 
   textarea.addEventListener('input', () => {
     if (textarea.value) drafts[ticket.id] = textarea.value;
     else delete drafts[ticket.id];
+    if (textarea.value.trim()) markTyping(noteMode ? 'note' : 'reply');
+    else stopTyping();
     saveDrafts();
     fitTextarea();
     updateSlash();
@@ -1693,7 +1932,11 @@ function renderDetail(ticket) {
     submitReply(false);
   });
   if (fillIns()) updateHint();
-  main.append(form);
+  const typing = element('div', 'typing-indicator');
+  typing.setAttribute('role', 'status');
+  typing.setAttribute('aria-live', 'polite');
+  fillTyping(typing, ticket.id);
+  main.append(typing, form);
   split.append(main);
   if (state.showDetails) split.append(renderClientPanel(ticket, manage));
   panel.append(split);
@@ -2601,6 +2844,7 @@ function renderOverview(content) {
   actions.append(goInbox, refresh);
   hero.append(introduction, actions);
   content.append(hero);
+  if (shouldOfferNotify()) content.append(renderNotifyOffer());
   renderFeedback(content);
 
   if (!stats) {
@@ -2773,6 +3017,8 @@ window.addEventListener('popstate', () => {
 });
 
 function renderDashboard() {
+  // Al reemplazar el menú, el navegador cierra el popover de avisos sin disparar "toggle".
+  notifyMenuOpen = false;
   if (!state.authorized) return renderUnauthorized();
   state.live?.setTicket(state.page === 'tickets' ? state.selectedId : null);
   const shell = element('div', state.page === 'tickets' ? 'dashboard is-inbox' : 'dashboard');
@@ -2816,6 +3062,8 @@ function renderDashboard() {
   themeButton.append(icon(dark ? 'sun' : 'moon'));
   themeButton.addEventListener('click', toggleTheme);
   accountCard.append(me, themeButton, logout);
+  const notifyControl = renderNotifyControl();
+  if (notifyControl) account.append(notifyControl);
   account.append(cmdButton, accountCard);
   const nav = element('nav', 'header-nav');
   nav.setAttribute('aria-label', 'Secciones');
@@ -3164,6 +3412,7 @@ function buildCommands() {
     });
   });
   items.push(
+    ...notifyCommands(),
     { group: 'Cuenta', label: 'Ver atajos de teclado', keywords: 'ayuda teclas', run: () => showToast('J / K: ticket siguiente o anterior · R: responder · N: nota interna · /: buscar · Esc: cerrar ticket · Ctrl K: paleta', '', null, 15000) },
     { group: 'Cuenta', label: currentTheme() === 'dark' ? 'Usar tema claro' : 'Usar tema oscuro', keywords: 'modo noche oscuro claro apariencia tema', run: toggleTheme },
     { group: 'Cuenta', label: 'Salir', keywords: 'cerrar sesion logout', run: signOut }
@@ -3185,6 +3434,8 @@ document.addEventListener('keydown', (event) => {
   if (!state.authorized) return;
   // Con el visor abierto, las teclas son suyas (flechas y Esc) y no deben mover nada detrás.
   if (document.querySelector('dialog.viewer[open]')) return;
+  // El menú de avisos se cierra solo con Esc; el resto de los atajos no aplica mientras está abierto.
+  if (isNotifyMenuOpen()) return;
   if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'k') {
     event.preventDefault();
     if (isPaletteOpen()) closePalette();
@@ -3232,7 +3483,8 @@ window.matchMedia('(min-width: 1280px)').addEventListener('change', () => {
 });
 
 async function pollSupport() {
-  if (!state.authorized || state.busy || document.hidden || state.page === 'agents') return;
+  // Con la pestaña oculta solo sondeamos si el agente activó los avisos de escritorio.
+  if (!state.authorized || state.busy || (document.hidden && notifyStatus() !== 'on') || state.page === 'agents') return;
   if (state.polling) {
     state.pollQueued = true;
     return;
@@ -3243,9 +3495,10 @@ async function pollSupport() {
   const previous = new Map(state.tickets.map((ticket) => [ticket.id, ticket]));
   const previousLatest = state.tickets.reduce((latest, ticket) => Math.max(latest, new Date(ticket.created_at).getTime()), 0);
   try {
-    const [page, stats] = await Promise.all([
+    const [page, stats, mentions] = await Promise.all([
       fetchTicketPage(state.ticketLimit),
       state.supabase.rpc('support_dashboard_stats'),
+      fetchNewMentions(userId),
     ]);
     if (userId !== state.session?.user?.id || !state.authorized || state.busy) return;
     if (page.error) return;
@@ -3259,6 +3512,12 @@ async function pollSupport() {
       ? tickets.filter((ticket) => {
         const before = previous.get(ticket.id);
         return before && ticket.status === 'open' && before.last_message_at !== ticket.last_message_at;
+      })
+      : [];
+    const assignedToMe = state.ticketsLoaded
+      ? tickets.filter((ticket) => {
+        const before = previous.get(ticket.id);
+        return before && before.assigned_agent_id !== userId && ticket.assigned_agent_id === userId;
       })
       : [];
     state.tickets = tickets;
@@ -3277,13 +3536,20 @@ async function pollSupport() {
       }
     }
     await resolveAvatarUrls();
-    if (fresh.length || replies.length) {
-      state.unseenTickets += fresh.length + replies.length;
+    notifyDesktop({ fresh, replies, assignedToMe, mentions, userId });
+    if (fresh.length || replies.length || mentions.length) {
+      state.unseenTickets += fresh.length + replies.length + mentions.length;
       updateDocumentTitle();
       const parts = [];
       if (fresh.length) parts.push(`${fresh.length} ${fresh.length === 1 ? 'ticket nuevo' : 'tickets nuevos'}`);
       if (replies.length) parts.push(`${replies.length} ${replies.length === 1 ? 'respuesta de usuario' : 'respuestas de usuarios'}`);
-      showToast(parts.join(' · '), state.page === 'tickets' ? '' : 'Ver tickets', () => {
+      if (mentions.length) parts.push(`${mentions.length === 1 ? 'Te mencionaron en una nota' : `Te mencionaron en ${mentions.length} notas`}`);
+      const onlyMention = !fresh.length && !replies.length && mentions.length === 1;
+      showToast(parts.join(' · '), onlyMention ? 'Ver nota' : state.page === 'tickets' ? '' : 'Ver tickets', () => {
+        if (onlyMention) {
+          openTicketFromNotice(mentions[0].ticket_id);
+          return;
+        }
         state.filter = 'open';
         state.ticketSort = 'urgent';
         navigateTo('tickets');
@@ -3292,7 +3558,7 @@ async function pollSupport() {
     const list = app.querySelector('.ticket-list');
     if (isTypingInApp() && list && state.page === 'tickets') {
       renderTicketResults(list, list.querySelector('.list-heading') || element('div', 'list-heading'));
-    } else if (!isTypingInApp() && state.page !== 'profile') {
+    } else if (!isTypingInApp() && !isNotifyMenuOpen() && state.page !== 'profile') {
       renderDashboard();
     }
   } finally {
@@ -3312,6 +3578,110 @@ function startPolling() {
   }, POLL_INTERVAL_MS);
 }
 
+// Formas en que el equipo puede mencionarme en una nota: @Nombre, @NombreApellido o @usuario-del-correo.
+function myMentionHandles() {
+  const name = String(state.profile?.display_name || '').trim();
+  const handles = new Set();
+  if (name && !name.includes('@')) {
+    handles.add(foldText(firstWord(name)));
+    handles.add(foldText(name.replace(/\s+/g, '')));
+  }
+  const mailbox = state.session?.user?.email?.split('@')[0];
+  if (mailbox) handles.add(foldText(mailbox));
+  handles.delete('');
+  return handles;
+}
+
+function mentionsMe(body, handles) {
+  if (!handles.size) return false;
+  return [...String(body || '').matchAll(/@([\p{L}\p{N}_.-]+)/gu)]
+    .some(([, handle]) => handles.has(foldText(handle.replace(/[.-]+$/, ''))));
+}
+
+// Notas nuevas de otros que me mencionan. La primera consulta solo fija el punto de partida.
+async function fetchNewMentions(userId) {
+  if (!userId) return [];
+  const query = state.supabase
+    .from('support_ticket_activity')
+    .select('id, ticket_id, actor_id, body, created_at')
+    .eq('kind', 'note')
+    .neq('actor_id', userId)
+    .order('created_at', { ascending: false })
+    .limit(20);
+  const since = state.mentionsSince;
+  if (since) query.gt('created_at', since);
+  const { data, error } = await query;
+  if (error || userId !== state.session?.user?.id) return [];
+  const notes = data || [];
+  if (notes.length) state.mentionsSince = notes[0].created_at;
+  else if (!since) state.mentionsSince = new Date(0).toISOString();
+  if (!since) return [];
+  const handles = myMentionHandles();
+  return notes.filter((note) => mentionsMe(note.body, handles)).reverse();
+}
+
+function ticketLabel(ticketId) {
+  const ticket = state.tickets.find((item) => item.id === ticketId);
+  return ticket ? `${ticket.client_name}: ${ticket.subject}` : 'un ticket';
+}
+
+function openTicketFromNotice(ticketId) {
+  if (!state.authorized) return;
+  if (ticketId && state.tickets.some((ticket) => ticket.id === ticketId)) void selectTicket(ticketId);
+  else navigateTo('tickets');
+}
+
+function clip(text, max = 110) {
+  const value = String(text || '').replace(/\s+/g, ' ').trim();
+  return value.length > max ? `${value.slice(0, max - 1)}…` : value;
+}
+
+// Solo lo que le toca a cada uno: tickets nuevos míos o sin dueño, respuestas en mis tickets,
+// tickets que me asignaron y menciones. Varios eventos juntos salen en un único aviso.
+function notifyDesktop({ fresh, replies, assignedToMe, mentions, userId }) {
+  if (notifyStatus() !== 'on' || isPortalInView()) return;
+  const mine = (ticket) => ticket.assigned_agent_id === userId || !ticket.assigned_agent_id;
+  const events = [];
+  const seen = new Set();
+  const push = (event) => {
+    const key = `${event.kind}:${event.ticketId}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    events.push(event);
+  };
+  fresh.filter(mine).forEach((ticket) => push({
+    kind: 'new', ticketId: ticket.id, title: `Ticket nuevo de ${ticket.client_name}`, line: `Nuevo: ${ticket.client_name}`, body: ticket.subject,
+  }));
+  assignedToMe.forEach((ticket) => push({
+    kind: 'assigned', ticketId: ticket.id, title: 'Te asignaron un ticket', line: `Asignado: ${ticket.client_name}`, body: `${ticket.client_name}: ${ticket.subject}`,
+  }));
+  replies.filter((ticket) => ticket.assigned_agent_id === userId || (state.role === 'owner' && !ticket.assigned_agent_id)).forEach((ticket) => push({
+    kind: 'reply', ticketId: ticket.id, title: `${ticket.client_name} respondió`, line: `Respuesta: ${ticket.client_name}`, body: ticket.subject,
+  }));
+  mentions.forEach((note) => {
+    const author = memberName(teamMember(note.actor_id), 'Alguien del equipo');
+    push({ kind: 'mention', ticketId: note.ticket_id, title: `${author} te mencionó`, line: `Mención de ${firstWord(author)}`, body: `${clip(note.body)} · ${ticketLabel(note.ticket_id)}` });
+  });
+  if (!events.length) return;
+  if (events.length === 1) {
+    const [event] = events;
+    showDesktopNotice({ title: event.title, body: clip(event.body, 160), tag: `uvr-ticket-${event.ticketId}`, onClick: () => openTicketFromNotice(event.ticketId) });
+    return;
+  }
+  const lines = events.slice(0, 3).map((event) => event.line);
+  if (events.length > 3) lines.push(`y ${events.length - 3} más`);
+  showDesktopNotice({
+    title: `${events.length} novedades en soporte`,
+    body: lines.join('\n'),
+    tag: 'uvr-support',
+    onClick: () => {
+      state.filter = 'open';
+      state.ticketSort = 'urgent';
+      navigateTo('tickets');
+    },
+  });
+}
+
 function startLive() {
   const userId = state.session?.user?.id;
   if (state.live || !userId) return;
@@ -3319,8 +3689,9 @@ function startLive() {
     supabase: state.supabase,
     userId,
     onChange: () => void pollSupport(),
-    onPresence: (viewers) => {
+    onPresence: ({ viewers, typing }) => {
       state.viewers = viewers;
+      state.typing = typing;
       paintViewers();
     },
     onStatus: (ok) => {
@@ -3337,6 +3708,8 @@ function stopLive() {
   state.live = null;
   state.liveOk = false;
   state.viewers = {};
+  state.typing = {};
+  stopTyping();
 }
 
 function paintLivePill() {
@@ -3365,6 +3738,57 @@ function fillViewers(slot, ticketId) {
 function paintViewers() {
   const slot = app.querySelector('.ticket-viewers');
   if (slot) fillViewers(slot, state.selectedId);
+  const typing = app.querySelector('.typing-indicator');
+  if (typing) fillTyping(typing, state.selectedId);
+}
+
+function typistsOf(ticketId) {
+  return Object.entries(state.typing[ticketId] || {}).map(([id, kind]) => ({ id, kind, member: teamMember(id) }));
+}
+
+function fillTyping(slot, ticketId) {
+  const typists = typistsOf(ticketId);
+  slot.replaceChildren();
+  slot.hidden = !typists.length;
+  slot.classList.toggle('is-reply', typists.some((typist) => typist.kind === 'reply'));
+  if (!typists.length) return;
+  const faces = element('span', 'typing-faces');
+  typists.slice(0, 3).forEach(({ member }) => faces.append(renderAvatar(memberName(member, 'Equipo'), member?.avatar_path, 'xs')));
+  const dots = element('span', 'typing-dots');
+  dots.setAttribute('aria-hidden', 'true');
+  dots.append(element('i'), element('i'), element('i'));
+  const names = typists.map(({ member }) => firstWord(memberName(member, 'Alguien del equipo')));
+  let text;
+  if (typists.length === 1) {
+    text = `${names[0]} está escribiendo ${typists[0].kind === 'reply' ? 'una respuesta al cliente' : 'una nota interna'}`;
+  } else {
+    text = `${names.slice(0, 2).join(' y ')}${names.length > 2 ? ` y ${names.length - 2} más` : ''} están escribiendo`;
+  }
+  const pill = element('span', 'typing-pill');
+  pill.append(faces, element('span', 'typing-text', text), dots);
+  slot.append(pill);
+}
+
+// "Está escribiendo": se avisa al empezar y se apaga tras unos segundos sin teclear, al enviar o al salir.
+let typingTimer = null;
+let typingKind = null;
+let typingTicket = null;
+function markTyping(kind) {
+  window.clearTimeout(typingTimer);
+  typingTimer = window.setTimeout(stopTyping, TYPING_IDLE_MS);
+  if (typingKind === kind && typingTicket === state.selectedId) return;
+  typingKind = kind;
+  typingTicket = state.selectedId;
+  state.live?.setTyping(kind);
+}
+
+function stopTyping() {
+  window.clearTimeout(typingTimer);
+  typingTimer = null;
+  if (!typingKind) return;
+  typingKind = null;
+  typingTicket = null;
+  state.live?.setTyping(null);
 }
 
 function stopPolling() {
@@ -3390,6 +3814,8 @@ function resetTicketView() {
   state.avatarUrlsAt = 0;
   state.clientContexts = {};
   state.profileSaving = false;
+  state.mentionsSince = null;
+  state.typing = {};
 }
 
 document.addEventListener('visibilitychange', () => {
@@ -3756,6 +4182,7 @@ async function boot() {
   state.pendingMfaFactorId = null;
   state.authorized = true;
   loadDrafts();
+  loadNotifyPrefs(state.session?.user?.id);
   if (state.role !== 'owner' && state.page === 'agents') state.page = 'overview';
   syncRoute({ replace: true });
   startPolling();

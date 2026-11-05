@@ -1,4 +1,5 @@
-// Canal privado "support-live": cambios de tickets y mensajes en vivo, y presencia del equipo.
+// Canal privado "support-live": cambios de tickets y mensajes en vivo, y presencia del equipo
+// (quién mira cada ticket y si está escribiendo una respuesta o una nota).
 // Los cambios llegan filtrados por la RLS de cada tabla; la presencia, por las políticas de realtime.messages.
 const CHANGE_DEBOUNCE_MS = 350;
 
@@ -6,6 +7,8 @@ export function createLiveChannel({ supabase, userId, onChange, onPresence, onSt
   let channel = null;
   let timer = null;
   let ticketId = null;
+  // 'reply' | 'note' | null: qué está escribiendo este agente en el ticket abierto.
+  let typing = null;
   let subscribed = false;
 
   const schedule = () => {
@@ -16,21 +19,26 @@ export function createLiveChannel({ supabase, userId, onChange, onPresence, onSt
     }, CHANGE_DEBOUNCE_MS);
   };
 
-  const viewers = () => {
+  const presence = () => {
     const byTicket = {};
+    const typingByTicket = {};
     for (const [key, metas] of Object.entries(channel?.presenceState() || {})) {
       if (key === userId) continue;
       for (const meta of metas) {
         if (typeof meta?.ticket !== 'string') continue;
         (byTicket[meta.ticket] ||= new Set()).add(key);
+        if (meta.typing === 'reply' || meta.typing === 'note') (typingByTicket[meta.ticket] ||= {})[key] = meta.typing;
       }
     }
-    return Object.fromEntries(Object.entries(byTicket).map(([id, people]) => [id, [...people]]));
+    return {
+      viewers: Object.fromEntries(Object.entries(byTicket).map(([id, people]) => [id, [...people]])),
+      typing: typingByTicket,
+    };
   };
 
   const announce = () => {
     if (!channel || !subscribed) return;
-    void channel.track({ ticket: ticketId }).catch(() => {});
+    void channel.track(ticketId && typing ? { ticket: ticketId, typing } : { ticket: ticketId }).catch(() => {});
   };
 
   channel = supabase
@@ -38,18 +46,25 @@ export function createLiveChannel({ supabase, userId, onChange, onPresence, onSt
     .on('postgres_changes', { event: '*', schema: 'public', table: 'support_tickets' }, schedule)
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'support_ticket_messages' }, schedule)
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'support_ticket_activity' }, schedule)
-    .on('presence', { event: 'sync' }, () => onPresence(viewers()))
+    .on('presence', { event: 'sync' }, () => onPresence(presence()))
     .subscribe((status) => {
       subscribed = status === 'SUBSCRIBED';
       onStatus(subscribed);
       if (subscribed) announce();
-      else onPresence({});
+      else onPresence({ viewers: {}, typing: {} });
     });
 
   return {
     setTicket(next) {
       if (next === ticketId) return;
       ticketId = next;
+      typing = null;
+      announce();
+    },
+    setTyping(next) {
+      const value = next === 'reply' || next === 'note' ? next : null;
+      if (value === typing) return;
+      typing = value;
       announce();
     },
     stop() {

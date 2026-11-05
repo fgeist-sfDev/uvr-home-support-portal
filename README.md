@@ -60,6 +60,10 @@ Apply migration `20261122000000_support_live_presence.sql`. Tickets and messages
 
 Pushing to `main` builds and deploys the site. The workflow fails if either public Supabase variable is missing.
 
+## Desktop notifications and typing
+
+No migration needed. The **Avisos** button in the side menu (also in the command palette) turns desktop notifications on; the browser only asks for permission when the agent clicks it, never on load. Once on, the portal keeps checking in the background and notifies only when it is not in view: new tickets that are mine or unassigned, tickets assigned to me, client replies on my tickets (and unassigned ones for the owner) and internal notes that mention me with `@name`. Several events at once are grouped in a single notification; clicking one opens the ticket. Agents can pause them for an hour or until 9:00 the next day, or send a test. Preferences are saved per user in this browser. The live channel also shares whether someone is typing a reply or an internal note, shown above the composer; it goes quiet after 4 seconds without typing.
+
 ## Local build
 
 Run `npm ci`, then provide the public Supabase configuration and run `npm run build`:

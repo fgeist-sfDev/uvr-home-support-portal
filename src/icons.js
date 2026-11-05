@@ -116,6 +116,18 @@ const shapes = {
   chevronRight: [
     ['path', { d: 'M9 5l7 7-7 7' }],
   ],
+  bell: [
+    ['path', { d: 'M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9' }],
+    ['path', { d: 'M10.3 21a1.9 1.9 0 0 0 3.4 0' }],
+  ],
+  bellOff: [
+    ['path', { d: 'M8.7 3.2A6 6 0 0 1 18 8c0 2.8.5 4.8 1.1 6.2' }],
+    ['path', { d: 'M17 17H3s3-2 3-9c0-.6.1-1.2.3-1.8' }],
+    ['path', { d: 'M10.3 21a1.9 1.9 0 0 0 3.4 0M2 2l20 20' }],
+  ],
+  test: [
+    ['path', { d: 'M22 2 11 13M22 2l-7 20-4-9-9-4z' }],
+  ],
 };
 
 export function icon(name, className = '') {
