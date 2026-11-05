@@ -580,10 +580,13 @@ function renderMessage(message) {
   return bubble;
 }
 
-function renderClientPanel(ticket) {
+function renderClientPanel(ticket, manage) {
   const context = state.clientContexts[ticket.id];
   const panel = element('section', 'client-panel');
-  panel.setAttribute('aria-label', 'Datos del cliente');
+  panel.setAttribute('aria-label', 'Detalles del ticket');
+  if (manage) panel.append(manage);
+  const clientBlock = element('div', 'side-section client-block');
+  clientBlock.append(element('h3', 'side-title', 'Cliente'));
   const identity = element('div', 'client-identity');
   identity.append(renderAvatar(ticket.client_name, null, 'lg'));
   const names = element('div', 'client-names');
@@ -592,9 +595,10 @@ function renderClientPanel(ticket) {
     element('span', 'muted', context?.account_role === 'cleaner' ? 'Profesional' : context?.account_role === 'client' ? 'Cliente' : 'Usuario de UVR Home')
   );
   identity.append(names);
-  panel.append(identity);
+  clientBlock.append(identity);
+  panel.append(clientBlock);
   if (!context) {
-    panel.append(element('p', 'muted client-note', context === null ? 'No pudimos cargar los datos de la cuenta.' : 'Cargando datos de la cuenta…'));
+    clientBlock.append(element('p', 'muted client-note', context === null ? 'No pudimos cargar los datos de la cuenta.' : 'Cargando datos de la cuenta…'));
     return panel;
   }
   const badge = element(
@@ -609,13 +613,13 @@ function renderClientPanel(ticket) {
     ['Servicios cancelados', String(context.cancelled_services ?? 0)],
     ['Tickets', `${context.tickets_total ?? 0} · ${context.tickets_open ?? 0} ${Number(context.tickets_open) === 1 ? 'abierto' : 'abiertos'}`],
     ['App', `${ticket.app_version || '—'} · ${ticket.platform}`],
-    ['Ticket creado', formatAge(ticket.created_at)],
   ].forEach(([label, value]) => {
     const row = element('div', '');
     row.append(element('dt', '', label), element('dd', '', value));
     facts.append(row);
   });
-  panel.append(badge, facts, element('p', 'fine-print client-note', 'No mostramos teléfono, correo ni documentos. Solo lo necesario para atender el caso.'));
+  clientBlock.append(badge, facts);
+  panel.append(element('p', 'fine-print client-note', 'No mostramos teléfono, correo ni documentos. Solo lo necesario para atender el caso.'));
   return panel;
 }
 
@@ -628,13 +632,17 @@ function renderDetail(ticket) {
   backToList.addEventListener('click', closeTicket);
   const title = element('div', 'detail-title');
   const titleText = element('div', 'detail-title-text');
-  titleText.append(element('h2', '', ticket.subject));
+  const subject = element('h2', '', ticket.subject);
+  subject.title = ticket.subject;
+  titleText.append(subject);
   const context = element('p', 'ticket-context');
+  const created = element('span', '', `Creado ${formatAge(ticket.created_at)}`);
+  created.title = formatDate(ticket.created_at);
   context.append(
     element('span', `status status-${ticket.status}`, statusNames[ticket.status] || ticket.status),
     element('span', '', ticket.client_name),
     element('span', '', typeNames[ticket.ticket_type] || 'Ayuda'),
-    element('span', '', formatDate(ticket.created_at))
+    created
   );
   const viewers = element('p', 'ticket-viewers');
   fillViewers(viewers, ticket.id);
@@ -642,6 +650,15 @@ function renderDetail(ticket) {
   titleText.append(context, viewers);
   title.append(renderAvatar(ticket.client_name), titleText);
   const controls = element('div', 'ticket-controls');
+  const manage = element('div', 'side-section manage-block');
+  manage.append(element('h3', 'side-title', 'Gestión'));
+  const manageFields = element('div', 'manage-fields');
+  manage.append(manageFields);
+  const field = (labelText, control) => {
+    const label = element('label', 'manage-field');
+    label.append(element('span', '', labelText), control);
+    manageFields.append(label);
+  };
   if (state.role === 'owner') {
     const assignment = document.createElement('select');
     assignment.className = 'status-select';
@@ -679,18 +696,18 @@ function renderDetail(ticket) {
     assignment.addEventListener('change', () => (assignment.value === myId
       ? claimTicket(ticket.id)
       : assignTicket(ticket.id, assignment.value || null)));
-    controls.append(assignment);
+    field('Asignado a', assignment);
   }
   const takenByMeNow = ticket.assigned_agent_id === state.session?.user?.id;
   const canTake = !takenByMeNow
     && !['resolved', 'closed'].includes(ticket.status)
     && (state.role === 'owner' || !ticket.assigned_agent_id);
   if (canTake) {
-    const take = element('button', 'text-button agents-link', 'Tomar ticket');
+    const take = element('button', 'primary-button take-button', 'Tomar ticket');
     take.type = 'button';
     take.disabled = state.busy;
     take.addEventListener('click', () => claimTicket(ticket.id));
-    controls.prepend(take);
+    controls.append(take);
   }
   const status = document.createElement('select');
   status.className = 'status-select';
@@ -704,8 +721,11 @@ function renderDetail(ticket) {
   status.setAttribute('aria-label', 'Estado del ticket');
   status.disabled = state.busy;
   status.addEventListener('change', () => updateStatus(ticket.id, status.value));
-  controls.append(status);
-  header.append(backToList, title, controls);
+  const statusField = element('label', 'manage-field');
+  statusField.append(element('span', '', 'Estado'), status);
+  manageFields.prepend(statusField);
+  header.append(backToList, title);
+  if (controls.childElementCount) header.append(controls);
   panel.append(header);
 
   const thread = element('div', 'thread');
@@ -721,8 +741,9 @@ function renderDetail(ticket) {
   quick.setAttribute('aria-label', 'Respuestas rápidas');
   const aiButton = element('button', 'ai-button', '✨ Sugerir respuesta');
   aiButton.type = 'button';
+  aiButton.title = 'La IA arma un borrador para que lo revises. No se envía sola.';
   aiButton.disabled = state.busy;
-  const aiStatus = element('span', 'ai-status', 'La IA arma un borrador para que lo revises. No se envía sola.');
+  const aiStatus = element('span', 'ai-status', 'Al enviar, el ticket pasa a “Esperamos respuesta”.');
   aiStatus.setAttribute('role', 'status');
   const textarea = document.createElement('textarea');
   textarea.className = 'text-input reply-input';
@@ -730,7 +751,8 @@ function renderDetail(ticket) {
   textarea.rows = 3;
   textarea.maxLength = 4000;
   textarea.required = true;
-  textarea.placeholder = 'Escribile al usuario…';
+  const firstName = String(ticket.client_name || '').trim().split(/\s+/)[0];
+  textarea.placeholder = firstName ? `Escribile a ${firstName}…` : 'Escribile al usuario…';
   textarea.setAttribute('aria-label', 'Respuesta');
   textarea.value = state.drafts[ticket.id] || '';
   textarea.addEventListener('input', () => {
@@ -783,16 +805,16 @@ function renderDetail(ticket) {
   const bar = element('div', 'composer-bar');
   const send = element('button', 'primary-button send-button', state.busy ? 'Enviando…' : 'Enviar');
   send.type = 'submit';
+  send.title = 'Ctrl + Enter';
   send.disabled = state.busy;
-  bar.append(aiButton, aiStatus, send);
-  const hint = element('span', 'fine-print reply-hint', 'Al responder, el ticket pasa a “Esperamos respuesta”. Ctrl + Enter para enviar.');
-  form.append(quick, textarea, bar, hint);
+  bar.append(aiButton, aiStatus, element('kbd', 'reply-hint', 'Ctrl + Enter'), send);
+  form.append(quick, textarea, bar);
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
     await sendReply(ticket.id, new FormData(form).get('reply')?.toString().trim());
   });
   main.append(form);
-  split.append(main, renderClientPanel(ticket));
+  split.append(main, renderClientPanel(ticket, manage));
   panel.append(split);
   return panel;
 }
@@ -1431,8 +1453,12 @@ function renderDailyChart(days) {
 
 function renderStatusBreakdown(stats) {
   const section = element('section', 'overview-card status-breakdown');
-  section.append(element('h2', '', 'Estado de la bandeja'));
-  section.append(element('p', 'muted', 'Cómo se distribuyen los tickets que tenés a la vista.'));
+  const sectionHeading = element('div', 'section-heading');
+  const title = element('div', '');
+  title.append(element('h2', '', 'Estado de la bandeja'));
+  title.append(element('p', 'muted', 'Cómo se distribuyen los tickets que tenés a la vista.'));
+  sectionHeading.append(title);
+  section.append(sectionHeading);
   const counts = stats.status_counts || {};
   const total = Number(stats.total) || 0;
   statuses.forEach(([status, label]) => {
@@ -1565,12 +1591,36 @@ function renderOverview(content) {
   );
   if (state.role === 'owner') {
     metrics.append(renderStatCard('Sin asignar', stats.unassigned, 'En la cola general', 'stat-unassigned', 'queue'));
+  } else {
+    metrics.classList.add('is-four');
   }
   content.append(metrics);
 
   if (state.role === 'agent') content.append(renderAgentAvailability(stats));
 
-  const charts = element('div', 'overview-grid');
+  const recent = element('section', 'overview-card recent-card');
+  const recentHeading = element('div', 'section-heading');
+  const recentTitle = element('div', '');
+  recentTitle.append(element('h2', '', 'Actividad reciente'));
+  recentTitle.append(element('p', 'muted', 'Las últimas conversaciones con movimiento.'));
+  const allTickets = element('button', 'text-button section-link', 'Ver bandeja');
+  allTickets.type = 'button';
+  allTickets.append(icon('arrow'));
+  allTickets.addEventListener('click', () => navigateTo('tickets'));
+  recentHeading.append(recentTitle, allTickets);
+  recent.append(recentHeading);
+  const recentList = element('div', 'recent-list');
+  if (state.tickets.length) {
+    state.tickets.slice(0, 5).forEach((ticket) => recentList.append(renderRecentRow(ticket)));
+  } else {
+    recentList.append(element('p', 'empty', 'Todavía no hay tickets para mostrar.'));
+  }
+  recent.append(recentList);
+
+  const primary = element('div', 'overview-grid');
+  primary.append(recent, renderStatusBreakdown(stats));
+  content.append(primary);
+
   const volume = element('section', 'overview-card volume-card');
   const volumeHeading = element('div', 'section-heading');
   const volumeTitle = element('div', '');
@@ -1578,28 +1628,25 @@ function renderOverview(content) {
   volumeTitle.append(element('p', 'muted', 'Tickets creados durante los últimos 7 días.'));
   volumeHeading.append(volumeTitle, element('span', 'chart-period', '7 DÍAS'));
   volume.append(volumeHeading, renderDailyChart(stats.daily));
-  charts.append(volume, renderStatusBreakdown(stats));
-  content.append(charts);
+  const secondary = element('div', state.role === 'owner' ? 'overview-grid' : 'overview-grid is-single');
+  secondary.append(volume);
+  if (state.role === 'owner') secondary.append(renderAgentWorkload(stats));
+  content.append(secondary);
+}
 
-  if (state.role === 'owner') content.append(renderAgentWorkload(stats));
-
-  const recent = element('section', 'overview-card recent-card');
-  const recentHeading = element('div', 'section-heading');
-  const recentTitle = element('div', '');
-  recentTitle.append(element('h2', '', 'Actividad reciente'));
-  recentTitle.append(element('p', 'muted', 'Los últimos tickets recibidos en la bandeja.'));
-  recentHeading.append(recentTitle);
-  const allTickets = element('button', 'text-button', 'Ver todos');
-  allTickets.type = 'button';
-  allTickets.addEventListener('click', () => navigateTo('tickets'));
-  recentHeading.append(allTickets);
-  recent.append(recentHeading);
-  if (state.tickets.length) {
-    state.tickets.slice(0, 5).forEach((ticket) => recent.append(renderTicketRow(ticket)));
-  } else {
-    recent.append(element('p', 'empty', 'Todavía no hay tickets para mostrar.'));
-  }
-  content.append(recent);
+function renderRecentRow(ticket) {
+  const row = element('button', 'recent-row');
+  row.type = 'button';
+  const main = element('span', 'recent-main');
+  main.append(element('strong', '', ticket.client_name), element('span', '', ticket.subject));
+  const side = element('span', 'recent-side');
+  side.append(
+    element('span', `status status-${ticket.status}`, statusNames[ticket.status] || ticket.status),
+    element('time', '', formatAge(ticket.last_message_at))
+  );
+  row.append(renderAvatar(ticket.client_name), main, side);
+  row.addEventListener('click', () => selectTicket(ticket.id));
+  return row;
 }
 
 async function setMyAvailability() {
@@ -1782,13 +1829,12 @@ function renderDashboard() {
   const listPanel = element('aside', 'list-panel');
   const inboxHeading = element('div', 'inbox-heading');
   const inboxTitle = element('div', '');
+  const total = state.ticketTotal || state.tickets.length;
   inboxTitle.append(
     element('h1', '', 'Bandeja'),
-    element('p', '', 'Conversaciones de soporte')
+    element('p', '', `${total.toLocaleString('es-AR')} ${total === 1 ? 'conversación' : 'conversaciones'}`)
   );
-  const inboxCount = element('span', 'inbox-total', String(state.ticketTotal || state.tickets.length));
-  inboxCount.setAttribute('aria-label', `${state.ticketTotal || state.tickets.length} tickets en total`);
-  inboxHeading.append(inboxTitle, inboxCount);
+  inboxHeading.append(inboxTitle);
   const tools = element('div', 'list-tools');
   const searchRow = element('div', 'search-row');
   const search = document.createElement('input');
@@ -1814,9 +1860,8 @@ function renderDashboard() {
   const pills = element('div', 'filter-pills');
   pills.setAttribute('role', 'group');
   pills.setAttribute('aria-label', 'Filtrar por estado');
-  const pillOptions = [...ticketFilters];
-  pillOptions.push(['unassigned', 'Sin asignar']);
-  pillOptions.push(['all', 'Todos']);
+  const pillOptions = [['all', 'Todos'], ...ticketFilters];
+  pillOptions.splice(4, 0, ['unassigned', 'Sin asignar']);
   pillOptions.forEach(([value, label]) => {
     const count = value === 'all'
       ? state.tickets.length
