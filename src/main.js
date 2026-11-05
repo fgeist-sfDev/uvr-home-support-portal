@@ -49,12 +49,15 @@ const ticketFilters = [
   ['closed', 'Cerrados'],
 ];
 const DETAILS_PREF = 'uvr.support.showDetails';
+// En pantallas angostas los detalles son un cajón flotante: arranca cerrado y no pisa la preferencia de escritorio.
+const isWideDetails = () => window.matchMedia('(min-width: 1280px)').matches;
 const readDetailsPref = () => {
+  if (!isWideDetails()) return false;
   try {
     const saved = localStorage.getItem(DETAILS_PREF);
     if (saved !== null) return saved !== '0';
-  } catch { /* Sin almacenamiento: se usa el valor por pantalla. */ }
-  return window.matchMedia('(min-width: 861px)').matches;
+  } catch { /* Sin almacenamiento: se usa el valor por defecto. */ }
+  return true;
 };
 const state = {
   supabase: null,
@@ -715,7 +718,9 @@ function renderDetail(ticket) {
   detailsToggle.append(icon('panel'));
   detailsToggle.addEventListener('click', () => {
     state.showDetails = !state.showDetails;
-    try { localStorage.setItem(DETAILS_PREF, state.showDetails ? '1' : '0'); } catch { /* Sin almacenamiento: queda solo en memoria. */ }
+    if (isWideDetails()) {
+      try { localStorage.setItem(DETAILS_PREF, state.showDetails ? '1' : '0'); } catch { /* Sin almacenamiento: queda solo en memoria. */ }
+    }
     renderDashboard();
   });
   const takenByMeNow = ticket.assigned_agent_id === state.session?.user?.id;
@@ -1892,8 +1897,8 @@ function renderDashboard() {
     ? state.tickets.length
     : state.tickets.filter((ticket) => (value === 'unassigned' ? !ticket.assigned_agent_id : ticket.status === value)).length);
   const filterLabel = Object.fromEntries(ticketFilters);
-  const primaryFilters = [['all', 'Todos'], ['open', filterLabel.open], ['waiting_on_user', filterLabel.waiting_on_user], ['unassigned', 'Sin asignar']];
-  const moreFilters = ticketFilters.filter(([value]) => !primaryFilters.some(([primary]) => primary === value));
+  const primaryFilters = [['all', 'Todos'], ['open', filterLabel.open], ['waiting_on_user', filterLabel.waiting_on_user]];
+  const moreFilters = [['unassigned', 'Sin asignar'], ...ticketFilters.filter(([value]) => !primaryFilters.some(([primary]) => primary === value))];
   primaryFilters.forEach(([value, label]) => {
     const count = countFor(value);
     const pill = element('button', 'pill', label);
@@ -2154,6 +2159,11 @@ document.addEventListener('keydown', (event) => {
     return;
   }
   if (isPaletteOpen() || event.ctrlKey || event.metaKey || event.altKey || state.page !== 'tickets') return;
+  if (event.key === 'Escape' && state.showDetails && !isWideDetails()) {
+    state.showDetails = false;
+    renderDashboard();
+    return;
+  }
   const target = event.target;
   if (target instanceof HTMLElement && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON'].includes(target.tagName))) {
     if (!(target.tagName === 'BUTTON' && target.classList.contains('ticket-row'))) return;
@@ -2164,6 +2174,13 @@ document.addEventListener('keydown', (event) => {
     event.preventDefault();
     app.querySelector('.ticket-search')?.focus();
   } else if (event.key === 'Escape' && state.selectedId) closeTicket();
+});
+
+window.matchMedia('(min-width: 1280px)').addEventListener('change', () => {
+  const next = readDetailsPref();
+  if (next === state.showDetails) return;
+  state.showDetails = next;
+  if (state.authorized && state.page === 'tickets' && state.selectedId) renderDashboard();
 });
 
 async function pollSupport() {
