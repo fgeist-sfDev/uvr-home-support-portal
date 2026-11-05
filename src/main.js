@@ -1734,6 +1734,15 @@ function renderDashboard() {
 
   const columns = element('div', 'dashboard-columns');
   const listPanel = element('aside', 'list-panel');
+  const inboxHeading = element('div', 'inbox-heading');
+  const inboxTitle = element('div', '');
+  inboxTitle.append(
+    element('h1', '', 'Bandeja'),
+    element('p', '', 'Conversaciones de soporte')
+  );
+  const inboxCount = element('span', 'inbox-total', String(state.ticketTotal || state.tickets.length));
+  inboxCount.setAttribute('aria-label', `${state.ticketTotal || state.tickets.length} tickets en total`);
+  inboxHeading.append(inboxTitle, inboxCount);
   const tools = element('div', 'list-tools');
   const searchRow = element('div', 'search-row');
   const search = document.createElement('input');
@@ -1783,7 +1792,7 @@ function renderDashboard() {
   listHeading.setAttribute('aria-live', 'polite');
   listHeading.setAttribute('aria-atomic', 'true');
   renderTicketResults(list, listHeading);
-  listPanel.append(tools, list);
+  listPanel.append(inboxHeading, tools, list);
   columns.append(listPanel);
 
   const selected = state.tickets.find((ticket) => ticket.id === state.selectedId);
