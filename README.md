@@ -50,6 +50,10 @@ Apply migration `20261121000000_support_profiles_and_client_context.sql` before 
 
 The portal follows the system theme; the moon/sun button in the account card (or "Usar tema oscuro/claro" in the palette) overrides it and remembers the choice in `localStorage`. The dark styles are generated at build time by `theme-dark.mjs`, a dependency-free Vite plugin that re-maps every color in `src/style.css` (lime and forest surfaces keep their colors); hand-tuned overrides live in `src/theme-dark.css`. While data loads, the inbox, thread, ticket detail and overview show skeletons instead of loading text.
 
+## Attachments
+
+Apply migration `20261124000000_support_ticket_attachments.sql` before publishing this version. It adds the private `support-attachments` bucket (10 MB, JPG/PNG/WebP/PDF, one folder per ticket), the `attachments` column on messages and a `reply_support_ticket(p_ticket_id, p_message, p_attachments)` that checks every file exists in the ticket folder and was uploaded by the sender. In the composer, attach with the clip button, drag and drop or paste (up to 6 files per reply, text optional). Photos are resized to 1600 px and converted to WebP in the browser before uploading; removing a file before sending deletes it. Images show as a grid in the thread and open in a full-screen viewer (arrow keys to browse, `Esc` to close); PDFs show as a card. Files are served with signed URLs that expire after an hour. Internal notes don't take attachments.
+
 ## Live updates and presence
 
 Apply migration `20261122000000_support_live_presence.sql`. Tickets and messages arrive over Supabase Realtime (`support_tickets` and `support_ticket_messages` are already in the `supabase_realtime` publication, so each person only receives what their RLS allows) and the portal refreshes within about a second. The private `support-live` channel also shows who else is viewing the open ticket; only active, MFA-verified team members can join it. Polling stays as a safety net (every 2 minutes while the live channel is connected, every 30 seconds otherwise).

@@ -41,6 +41,13 @@ const quickReplies = [
   ['Cierre por falta de respuesta', 'Como no tuvimos novedades, vamos a dar el ticket por resuelto. Si todavía lo necesitás, escribinos y lo reabrimos.', 'cierre'],
 ];
 const UNDO_SEND_MS = 5000;
+const ATTACH_BUCKET = 'support-attachments';
+const ATTACH_MAX_FILES = 6;
+const ATTACH_MAX_BYTES = 10 * 1024 * 1024;
+const ATTACH_MAX_SIDE = 1600;
+const ATTACH_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+const ATTACH_URL_TTL_SECONDS = 3600;
+const ATTACH_URL_REFRESH_MS = 50 * 60000;
 const DRAFTS_KEY = 'uvr.support.drafts';
 const FILL_IN = '[completar]';
 const sortOptions = [
@@ -100,6 +107,8 @@ const state = {
   threadView: 'all',
   pendingSend: null,
   delivering: [],
+  uploads: {},
+  attachUrls: {},
   unseenTickets: 0,
   pollTimer: null,
   polling: false,
@@ -835,6 +844,7 @@ function renderOutgoing(item, ticket) {
     author_role: 'support',
     author_id: state.session?.user?.id,
     body: item.body,
+    attachments: item.attachments,
     created_at: item.createdAt,
   }, ticket, false);
   row.classList.add('is-outgoing');
@@ -954,11 +964,198 @@ function renderMessage(message, ticket, grouped) {
     meta.append(element('strong', '', name), time);
     stack.append(meta);
   }
-  const bubble = element('p', 'msg-bubble', message.body);
-  bubble.title = formatDate(message.created_at);
-  stack.append(bubble);
+  const attachments = renderAttachments(message.attachments);
+  if (attachments) stack.append(attachments);
+  if (message.body) {
+    const bubble = element('p', 'msg-bubble', message.body);
+    bubble.title = formatDate(message.created_at);
+    stack.append(bubble);
+  }
   row.append(avatarSlot, stack);
   return row;
+}
+
+function isImageAttachment(item) {
+  return String(item?.mime || '').startsWith('image/');
+}
+
+function formatBytes(size) {
+  const bytes = Number(size) || 0;
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / 1024 / 1024).toLocaleString('es-AR', { maximumFractionDigits: 1 })} MB`;
+}
+
+function attachmentUrl(item) {
+  return item.preview || state.attachUrls[item.path]?.url || '';
+}
+
+function renderAttachments(attachments) {
+  const list = Array.isArray(attachments) ? attachments.filter((item) => item?.path) : [];
+  if (!list.length) return null;
+  const wrap = element('div', 'msg-attachments');
+  const images = list.filter(isImageAttachment);
+  if (images.length) {
+    const grid = element('div', `attach-grid count-${images.length}`);
+    images.forEach((item) => {
+      const tile = element('button', 'attach-image attach-tile');
+      tile.type = 'button';
+      tile.dataset.attachPath = item.path;
+      tile.dataset.attachName = item.name || 'Imagen';
+      tile.setAttribute('aria-label', `Ver ${item.name || 'imagen'}`);
+      if (images.length === 1 && item.width > 0 && item.height > 0) {
+        // Una sola imagen se muestra entera, con su proporción y sin pasar de 320 x 340 px.
+        tile.style.aspectRatio = `${item.width} / ${item.height}`;
+        tile.style.width = `${Math.max(140, Math.round(Math.min(320, (340 * item.width) / item.height)))}px`;
+      }
+      const image = document.createElement('img');
+      image.alt = item.name || '';
+      image.decoding = 'async';
+      image.loading = 'lazy';
+      const url = attachmentUrl(item);
+      if (url) image.src = url;
+      else tile.classList.add('is-loading');
+      image.addEventListener('error', () => tile.classList.add('is-broken'));
+      tile.append(image);
+      tile.addEventListener('click', () => openViewer(tile));
+      grid.append(tile);
+    });
+    wrap.append(grid);
+  }
+  list.filter((item) => !isImageAttachment(item)).forEach((item) => {
+    const link = element('a', 'attach-file');
+    link.dataset.attachPath = item.path;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    const url = attachmentUrl(item);
+    if (url) link.href = url;
+    else link.classList.add('is-loading');
+    const text = element('span', 'attach-file-text');
+    text.append(element('strong', '', item.name || 'Archivo'), element('span', '', `PDF · ${formatBytes(item.size)}`));
+    link.append(icon('file', 'attach-file-icon'), text, icon('download', 'attach-file-action'));
+    link.title = `Abrir ${item.name || 'el archivo'}`;
+    wrap.append(link);
+  });
+  return wrap;
+}
+
+// Las URLs firmadas se piden en lote y se pintan sin volver a renderizar, porque el chat se re-renderiza mientras se escribe.
+let attachSigning = false;
+async function resolveAttachmentUrls() {
+  if (attachSigning || !state.authorized || state.threadFor !== state.selectedId) return;
+  const now = Date.now();
+  const paths = [...new Set(state.messages.flatMap((message) => (Array.isArray(message.attachments) ? message.attachments : []).map((item) => item?.path)))]
+    .filter((path) => path && (!state.attachUrls[path] || now - state.attachUrls[path].at > ATTACH_URL_REFRESH_MS));
+  if (!paths.length) return;
+  attachSigning = true;
+  const userId = state.session?.user?.id;
+  const { data, error } = await state.supabase.storage.from(ATTACH_BUCKET).createSignedUrls(paths, ATTACH_URL_TTL_SECONDS)
+    .catch((requestError) => ({ error: requestError }));
+  attachSigning = false;
+  if (error || !data || userId !== state.session?.user?.id) return;
+  data.forEach((item) => {
+    if (item.signedUrl) state.attachUrls[item.path] = { url: item.signedUrl, at: Date.now() };
+  });
+  paintAttachmentUrls();
+}
+
+function paintAttachmentUrls() {
+  document.querySelectorAll('[data-attach-path].is-loading').forEach((node) => {
+    const url = state.attachUrls[node.dataset.attachPath]?.url;
+    if (!url) return;
+    node.classList.remove('is-loading');
+    if (node.tagName === 'A') node.href = url;
+    else {
+      const image = node.querySelector('img');
+      if (image) image.src = url;
+    }
+  });
+}
+
+function downloadUrl(url, name) {
+  if (!/^https?:/i.test(url)) return url;
+  return `${url}${url.includes('?') ? '&' : '?'}download=${encodeURIComponent(name || 'imagen')}`;
+}
+
+// Visor a pantalla completa: recorre todas las imágenes del ticket con las flechas.
+function openViewer(trigger) {
+  const tiles = [...app.querySelectorAll('.thread .attach-image')];
+  const items = tiles.map((tile) => ({
+    path: tile.dataset.attachPath,
+    name: tile.dataset.attachName,
+    src: () => tile.querySelector('img')?.currentSrc || state.attachUrls[tile.dataset.attachPath]?.url || '',
+  }));
+  let index = Math.max(0, tiles.indexOf(trigger));
+  if (!items.length) return;
+  document.querySelector('dialog.viewer')?.remove();
+  const dialog = element('dialog', 'viewer');
+  dialog.setAttribute('aria-label', 'Imágenes adjuntas');
+  const bar = element('header', 'viewer-bar');
+  const name = element('strong', 'viewer-name');
+  const count = element('span', 'viewer-count');
+  const download = element('a', 'viewer-action');
+  download.target = '_blank';
+  download.rel = 'noopener noreferrer';
+  download.title = 'Descargar';
+  download.setAttribute('aria-label', 'Descargar imagen');
+  download.append(icon('download'));
+  const close = element('button', 'viewer-action');
+  close.type = 'button';
+  close.title = 'Cerrar (Esc)';
+  close.setAttribute('aria-label', 'Cerrar visor');
+  close.append(icon('close'));
+  close.addEventListener('click', () => dialog.close());
+  const info = element('div', 'viewer-info');
+  info.append(name, count);
+  bar.append(info, download, close);
+  const stage = element('div', 'viewer-stage');
+  const image = document.createElement('img');
+  image.decoding = 'async';
+  const arrow = (direction, glyph, label) => {
+    const button = element('button', `viewer-nav is-${direction > 0 ? 'next' : 'prev'}`);
+    button.type = 'button';
+    button.setAttribute('aria-label', label);
+    button.append(icon(glyph));
+    button.addEventListener('click', () => step(direction));
+    return button;
+  };
+  const prev = arrow(-1, 'chevronLeft', 'Imagen anterior');
+  const next = arrow(1, 'chevronRight', 'Imagen siguiente');
+  stage.append(prev, image, next);
+  stage.addEventListener('click', (event) => {
+    if (event.target === stage) dialog.close();
+  });
+  const paint = () => {
+    const item = items[index];
+    const src = item.src();
+    image.src = src;
+    image.alt = item.name || '';
+    name.textContent = item.name || 'Imagen';
+    count.textContent = `${index + 1} de ${items.length}`;
+    download.href = downloadUrl(src, item.name);
+    prev.hidden = next.hidden = items.length < 2;
+  };
+  function step(direction) {
+    index = (index + direction + items.length) % items.length;
+    paint();
+  }
+  dialog.addEventListener('keydown', (event) => {
+    if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+      event.preventDefault();
+      step(event.key === 'ArrowRight' ? 1 : -1);
+    }
+  });
+  dialog.addEventListener('close', () => {
+    const path = items[index]?.path;
+    dialog.remove();
+    const target = [...app.querySelectorAll('.thread .attach-image')].find((tile) => tile.dataset.attachPath === path);
+    (target || trigger)?.focus({ preventScroll: true });
+  });
+  dialog.append(bar, stage);
+  document.body.append(dialog);
+  paint();
+  dialog.showModal();
+  close.focus();
 }
 
 function renderClientPanel(ticket, manage) {
@@ -1144,6 +1341,8 @@ function renderDetail(ticket) {
   const noteMode = state.composerMode === 'note';
   const drafts = noteMode ? state.noteDrafts : state.drafts;
   const form = element('form', `reply-form composer${noteMode ? ' is-note' : ''}`);
+  // Con adjuntos se puede enviar sin texto: la validación la hace submitReply.
+  form.noValidate = true;
   const modes = element('div', 'composer-modes');
   modes.setAttribute('role', 'tablist');
   modes.setAttribute('aria-label', 'Tipo de mensaje');
@@ -1293,13 +1492,21 @@ function renderDetail(ticket) {
 
   const submitReply = (andNext = false) => {
     const body = textarea.value.trim();
-    if (!body || state.busy) {
+    const uploads = noteMode ? [] : state.uploads[ticket.id] || [];
+    const ready = uploads.filter((item) => item.status === 'ready');
+    if ((!body && !ready.length) || state.busy) {
       textarea.focus();
       return;
     }
     closeSlash();
     if (noteMode) {
       void addNote(ticket.id, body);
+      return;
+    }
+    if (uploads.some((item) => item.status === 'uploading')) {
+      aiStatus.classList.remove('is-hint', 'is-fill');
+      aiStatus.classList.add('is-error');
+      aiStatus.textContent = 'Esperá a que terminen de subir los archivos.';
       return;
     }
     if (body.includes(FILL_IN)) {
@@ -1310,7 +1517,7 @@ function renderDetail(ticket) {
       selectFillIn();
       return;
     }
-    queueReply(ticket, body, andNext);
+    queueReply(ticket, body, andNext, ready);
   };
 
   textarea.addEventListener('input', () => {
@@ -1424,8 +1631,62 @@ function renderDetail(ticket) {
     sendGroup.append(sendNext);
   }
   if (noteMode) bar.append(aiStatus, sendGroup);
-  else bar.append(quickMenu, aiButton, aiStatus, sendGroup);
-  box.append(slashMenu, textarea, bar);
+  else {
+    const fileInput = element('input', 'attach-input');
+    fileInput.type = 'file';
+    fileInput.multiple = true;
+    fileInput.accept = [...ATTACH_IMAGE_TYPES, 'application/pdf'].join(',');
+    fileInput.tabIndex = -1;
+    fileInput.hidden = true;
+    fileInput.addEventListener('change', () => {
+      addAttachments(ticket.id, [...fileInput.files]);
+      fileInput.value = '';
+    });
+    const attachButton = element('button', 'tool-button attach-button');
+    attachButton.type = 'button';
+    attachButton.title = 'Adjuntar imágenes o PDF (también podés arrastrarlos o pegarlos)';
+    attachButton.append(icon('paperclip'), element('span', 'tool-label', 'Adjuntar'));
+    attachButton.disabled = state.busy;
+    attachButton.addEventListener('click', () => fileInput.click());
+    bar.append(fileInput, attachButton, quickMenu, aiButton, aiStatus, sendGroup);
+  }
+  const tray = element('div', 'attach-tray');
+  tray.dataset.ticketId = ticket.id;
+  if (noteMode) tray.hidden = true;
+  else paintAttachTray(tray, ticket.id);
+  box.append(slashMenu, tray, textarea, bar);
+  if (!noteMode) {
+    textarea.addEventListener('paste', (event) => {
+      const files = [...(event.clipboardData?.files || [])];
+      if (!files.length) return;
+      event.preventDefault();
+      addAttachments(ticket.id, files);
+    });
+    const hasFiles = (event) => [...(event.dataTransfer?.types || [])].includes('Files');
+    let dragDepth = 0;
+    box.addEventListener('dragenter', (event) => {
+      if (!hasFiles(event)) return;
+      event.preventDefault();
+      dragDepth += 1;
+      box.classList.add('is-dropping');
+    });
+    box.addEventListener('dragover', (event) => {
+      if (!hasFiles(event)) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'copy';
+    });
+    box.addEventListener('dragleave', () => {
+      dragDepth = Math.max(0, dragDepth - 1);
+      if (!dragDepth) box.classList.remove('is-dropping');
+    });
+    box.addEventListener('drop', (event) => {
+      if (!hasFiles(event)) return;
+      event.preventDefault();
+      dragDepth = 0;
+      box.classList.remove('is-dropping');
+      addAttachments(ticket.id, [...event.dataTransfer.files]);
+    });
+  }
   form.append(modes, box);
   form.addEventListener('submit', (event) => {
     event.preventDefault();
@@ -1857,6 +2118,152 @@ function userError(message) {
   const error = new Error(message);
   error.userMessage = message;
   return error;
+}
+
+// Las fotos se achican a 1600 px y se pasan a WebP antes de subir: llegan rápido y pesan poco.
+function prepareAttachmentImage(file) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    const objectUrl = URL.createObjectURL(file);
+    image.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      const scale = Math.min(1, ATTACH_MAX_SIDE / Math.max(image.naturalWidth, image.naturalHeight));
+      const width = Math.max(1, Math.round(image.naturalWidth * scale));
+      const height = Math.max(1, Math.round(image.naturalHeight * scale));
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext('2d');
+      const encode = (type, quality) => new Promise((done) => canvas.toBlob(done, type, quality));
+      context.drawImage(image, 0, 0, width, height);
+      encode('image/webp', 0.85).then(async (webp) => {
+        let blob = webp;
+        // Algunos Safari no codifican WebP y devuelven PNG: en ese caso va JPG con fondo blanco.
+        if (!blob || blob.type !== 'image/webp') {
+          context.globalCompositeOperation = 'destination-over';
+          context.fillStyle = '#fff';
+          context.fillRect(0, 0, width, height);
+          blob = await encode('image/jpeg', 0.86);
+        }
+        if (!blob) reject(userError('No pudimos procesar la imagen.'));
+        else resolve({ blob, width, height, ext: blob.type === 'image/webp' ? 'webp' : 'jpg' });
+      });
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(userError('No pudimos leer esa imagen. Probá con otra.'));
+    };
+    image.src = objectUrl;
+  });
+}
+
+function paintAttachTray(tray, ticketId) {
+  const items = state.uploads[ticketId] || [];
+  tray.hidden = !items.length;
+  tray.replaceChildren(...items.map((item) => {
+    const chip = element('div', `attach-chip is-${item.status}${item.preview ? ' has-thumb' : ''}`);
+    chip.setAttribute('role', 'group');
+    chip.setAttribute('aria-label', item.name);
+    const thumb = element('span', 'attach-chip-thumb');
+    if (item.preview) {
+      const image = document.createElement('img');
+      image.src = item.preview;
+      image.alt = '';
+      thumb.append(image);
+    } else thumb.append(icon('file'));
+    const text = element('span', 'attach-chip-text');
+    const detail = item.status === 'uploading'
+      ? 'Subiendo…'
+      : item.status === 'error' ? item.error : formatBytes(item.size);
+    text.append(element('strong', '', item.name), element('span', '', detail));
+    const remove = element('button', 'attach-chip-remove');
+    remove.type = 'button';
+    remove.setAttribute('aria-label', `Quitar ${item.name}`);
+    remove.title = 'Quitar';
+    remove.append(icon('close'));
+    remove.addEventListener('click', () => removeAttachment(ticketId, item));
+    chip.append(thumb, text, remove);
+    return chip;
+  }));
+}
+
+function refreshAttachTray(ticketId) {
+  const tray = app.querySelector(`.attach-tray[data-ticket-id="${ticketId}"]`);
+  if (tray && !app.querySelector('.composer.is-note')) paintAttachTray(tray, ticketId);
+}
+
+function addAttachments(ticketId, files) {
+  const list = state.uploads[ticketId] || (state.uploads[ticketId] = []);
+  const problems = new Set();
+  files.forEach((file) => {
+    const isPdf = file.type === 'application/pdf' || (!file.type && /\.pdf$/i.test(file.name || ''));
+    if (!isPdf && !ATTACH_IMAGE_TYPES.includes(file.type)) {
+      problems.add('Solo podés adjuntar imágenes JPG, PNG o WebP y archivos PDF.');
+      return;
+    }
+    if (file.size > ATTACH_MAX_BYTES) {
+      problems.add('Cada archivo puede pesar hasta 10 MB.');
+      return;
+    }
+    if (list.length >= ATTACH_MAX_FILES) {
+      problems.add(`Podés adjuntar hasta ${ATTACH_MAX_FILES} archivos por mensaje.`);
+      return;
+    }
+    const item = {
+      id: crypto.randomUUID(),
+      name: (file.name || (isPdf ? 'Documento.pdf' : 'Imagen')).slice(0, 120),
+      mime: isPdf ? 'application/pdf' : 'image/webp',
+      size: file.size,
+      status: 'uploading',
+      path: '',
+      preview: isPdf ? '' : URL.createObjectURL(file),
+      width: 0,
+      height: 0,
+    };
+    list.push(item);
+    void uploadAttachment(ticketId, item, file);
+  });
+  if (problems.size) showToast([...problems].join(' '), '', null, 6000);
+  refreshAttachTray(ticketId);
+  app.querySelector('.reply-input')?.focus();
+}
+
+async function uploadAttachment(ticketId, item, file) {
+  const userId = state.session?.user?.id;
+  try {
+    let blob = file;
+    let ext = 'pdf';
+    if (item.mime !== 'application/pdf') {
+      const prepared = await prepareAttachmentImage(file);
+      ({ blob, ext } = prepared);
+      Object.assign(item, { mime: blob.type, size: blob.size, width: prepared.width, height: prepared.height });
+    }
+    const path = `${ticketId}/${crypto.randomUUID()}.${ext}`;
+    const { error } = await state.supabase.storage
+      .from(ATTACH_BUCKET)
+      .upload(path, blob, { contentType: item.mime, cacheControl: '3600' });
+    if (error) throw error;
+    // Si mientras subía lo quitaron o cambió la sesión, el archivo no se usa.
+    if (userId !== state.session?.user?.id || !state.uploads[ticketId]?.includes(item)) {
+      void state.supabase.storage.from(ATTACH_BUCKET).remove([path]);
+      return;
+    }
+    item.path = path;
+    item.status = 'ready';
+  } catch (error) {
+    item.status = 'error';
+    item.error = userFacingError(error, 'No se pudo subir. Quitalo y probá de nuevo.');
+  }
+  refreshAttachTray(ticketId);
+}
+
+function removeAttachment(ticketId, item) {
+  state.uploads[ticketId] = (state.uploads[ticketId] || []).filter((entry) => entry !== item);
+  if (!state.uploads[ticketId].length) delete state.uploads[ticketId];
+  if (item.path) void state.supabase.storage.from(ATTACH_BUCKET).remove([item.path]);
+  if (item.preview) URL.revokeObjectURL(item.preview);
+  refreshAttachTray(ticketId);
+  app.querySelector('.reply-input')?.focus();
 }
 
 function prepareAvatar(file) {
@@ -2576,6 +2983,7 @@ function renderDashboard() {
     thread.scrollTop = threadMemory && threadMemory.ticketId === thread.dataset.ticketId && !threadMemory.atBottom
       ? threadMemory.top
       : thread.scrollHeight;
+    void resolveAttachmentUrls();
   }
 }
 
@@ -2775,6 +3183,8 @@ function stepTicket(direction) {
 
 document.addEventListener('keydown', (event) => {
   if (!state.authorized) return;
+  // Con el visor abierto, las teclas son suyas (flechas y Esc) y no deben mover nada detrás.
+  if (document.querySelector('dialog.viewer[open]')) return;
   if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'k') {
     event.preventDefault();
     if (isPaletteOpen()) closePalette();
@@ -2990,7 +3400,7 @@ async function fetchThread(ticketId) {
   const [messages, activity] = await Promise.all([
     state.supabase
       .from('support_ticket_messages')
-      .select('id, author_id, author_role, body, created_at')
+      .select('id, author_id, author_role, body, attachments, created_at')
       .eq('ticket_id', ticketId)
       .order('created_at', { ascending: true })
       .limit(200),
@@ -3076,12 +3486,13 @@ async function requestAiDraft(ticketId) {
 }
 
 // Las respuestas esperan unos segundos antes de salir para poder deshacerlas, como en el correo.
-function queueReply(ticket, body, andNext) {
+function queueReply(ticket, body, andNext, attachments = []) {
   if (state.pendingSend) void flushPendingSend();
   const pending = {
     ticketId: ticket.id,
     clientName: ticket.client_name,
     body,
+    attachments,
     createdAt: new Date().toISOString(),
     queuedAt: Date.now(),
     timer: 0,
@@ -3090,11 +3501,21 @@ function queueReply(ticket, body, andNext) {
   state.pendingSend = pending;
   delete state.drafts[ticket.id];
   saveDrafts();
+  takeBackAttachments(ticket.id, attachments, false);
   setFeedback();
   showToast(`Respuesta a ${firstWord(ticket.client_name) || 'el cliente'} en camino`, 'Deshacer', undoPendingSend, UNDO_SEND_MS);
   if (andNext && openNextPending(ticket.id)) return;
   renderDashboard();
   app.querySelector('.reply-input')?.focus();
+}
+
+// Los adjuntos viajan con la respuesta en espera; al deshacer o si falla, vuelven al compositor.
+function takeBackAttachments(ticketId, attachments, restore) {
+  if (!attachments?.length) return;
+  const current = (state.uploads[ticketId] || []).filter((item) => !attachments.includes(item));
+  const next = restore ? [...attachments, ...current] : current;
+  if (next.length) state.uploads[ticketId] = next;
+  else delete state.uploads[ticketId];
 }
 
 function undoPendingSend() {
@@ -3103,8 +3524,10 @@ function undoPendingSend() {
   window.clearTimeout(pending.timer);
   state.pendingSend = null;
   const current = (state.drafts[pending.ticketId] || '').trim();
-  state.drafts[pending.ticketId] = current ? `${pending.body}\n\n${current}` : pending.body;
+  const restored = [pending.body, current].filter(Boolean).join('\n\n');
+  if (restored) state.drafts[pending.ticketId] = restored;
   saveDrafts();
+  takeBackAttachments(pending.ticketId, pending.attachments, true);
   state.composerMode = 'reply';
   if (state.selectedId === pending.ticketId && state.page === 'tickets') renderDashboard();
   else void selectTicket(pending.ticketId);
@@ -3123,18 +3546,27 @@ async function flushPendingSend() {
   const { error } = await state.supabase.rpc('reply_support_ticket', {
     p_ticket_id: pending.ticketId,
     p_message: pending.body,
+    p_attachments: pending.attachments.map(({ path, name, width, height }) => (
+      width && height ? { path, name, width, height } : { path, name }
+    )),
   });
   if (userId !== state.session?.user?.id) return;
   if (error) {
     state.delivering = state.delivering.filter((item) => item !== pending);
     const current = (state.drafts[pending.ticketId] || '').trim();
-    state.drafts[pending.ticketId] = current ? `${pending.body}\n\n${current}` : pending.body;
+    const restored = [pending.body, current].filter(Boolean).join('\n\n');
+    if (restored) state.drafts[pending.ticketId] = restored;
     saveDrafts();
+    takeBackAttachments(pending.ticketId, pending.attachments, true);
     setFeedback(userFacingError(error, 'No pudimos enviar la respuesta. Quedó como borrador.'));
     showToast(`No se envió la respuesta a ${firstWord(pending.clientName) || 'el cliente'}. Quedó como borrador.`, 'Abrir', () => selectTicket(pending.ticketId));
     if (state.authorized) renderDashboard();
     return;
   }
+  pending.attachments.forEach((item) => {
+    // La vista previa local evita un parpadeo mientras llega la URL firmada.
+    if (item.preview) state.attachUrls[item.path] = { url: item.preview, at: Date.now() };
+  });
   await Promise.all([
     loadTickets(),
     loadDashboardStats(),
@@ -3222,6 +3654,9 @@ async function signOut() {
   state.tickets = [];
   state.messages = [];
   state.activity = [];
+  state.uploads = {};
+  state.attachUrls = {};
+  document.querySelector('dialog.viewer')?.remove();
   state.threadFor = null;
   state.agents = [];
   state.dashboardStats = null;
