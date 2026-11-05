@@ -1224,14 +1224,17 @@ body { background: #f2f4f1; }
   .cmd-label,
   .cmd-button kbd,
   .account-meta,
-  .logout-button { white-space: nowrap; transition: opacity .15s ease; }
+  .logout-button { white-space: nowrap; transition: opacity .08s ease; }
+  /* Al abrir, el texto aparece recién cuando el panel ya casi terminó de expandirse; al cerrar, se va primero. */
+  .app-header:is(:hover, :focus-within) :is(.header-brand > div:last-child, .nav-caption, .nav-label, .cmd-label, .cmd-button kbd, .account-meta, .logout-button) { transition: opacity .18s ease .28s; }
   .app-header:not(:hover, :focus-within) :is(.header-brand > div:last-child, .nav-caption, .nav-label, .cmd-label, .cmd-button kbd, .account-meta, .logout-button) { opacity: 0; }
   .app-header:not(:hover, :focus-within) :is(.nav-button, .cmd-button) { width: 44px; }
-  .app-header:not(:hover, :focus-within) .account-card { border-color: transparent; background: transparent; }
-  .app-header:not(:hover, :focus-within) .nav-badge { position: absolute; top: 3px; left: 25px; min-width: 18px; padding: 1px 5px; font-size: 10px; line-height: 1.35; }
+  .app-header .account-card { transition: background-color .18s ease .28s, border-color .18s ease .28s; }
+  .app-header:not(:hover, :focus-within) .account-card { border-color: transparent; background: transparent; transition-duration: .08s; transition-delay: 0s; }
+  .app-header .nav-badge { position: absolute; top: 3px; left: 25px; min-width: 18px; margin: 0; padding: 1px 5px; font-size: 10px; line-height: 1.35; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .app-header, .dashboard.is-inbox .app-header { transition: none; }
+  .app-header, .dashboard.is-inbox .app-header, .app-header * { transition: none !important; }
 }
 
 /* Conversación tipo chat: avatar, nombre y hora fuera de la burbuja; mensajes seguidos agrupados. */

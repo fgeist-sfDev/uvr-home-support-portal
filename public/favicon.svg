@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#14543F"/>
+      <stop offset="1" stop-color="#062119"/>
+    </linearGradient>
+    <linearGradient id="lime" x1="0.2" y1="0" x2="0.8" y2="1">
+      <stop offset="0" stop-color="#EDFFB0"/>
+      <stop offset="0.55" stop-color="#CBF36B"/>
+      <stop offset="1" stop-color="#A5D93D"/>
+    </linearGradient>
+    <mask id="house" maskUnits="userSpaceOnUse" x="0" y="0" width="1024" height="1024">
+      <rect width="1024" height="1024" fill="#fff"/>
+      <g transform="translate(512 420) scale(1.38) translate(-512 -426)"><path d="M512 338 L612 426 V514 H412 V426 Z" fill="#000" stroke="#000" stroke-width="30" stroke-linejoin="round"/></g>
+    </mask>
+  </defs>
+  <rect width="1024" height="1024" rx="230" fill="url(#bg)"/>
+  <g transform="translate(512 470) scale(1.22) translate(-512 -514)">
+    <g mask="url(#house)"><path d="M512 830 C468 776 292 604 292 424 A220 220 0 1 1 732 424 C732 604 556 776 512 830 Z" fill="url(#lime)"/></g>
+    <g transform="translate(512 420) scale(1.38) translate(-512 -426)"><path d="M488 514 V462 a24 24 0 0 1 48 0 V514 Z" fill="url(#lime)"/></g>
+  </g>
+</svg>
