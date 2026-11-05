@@ -29,14 +29,19 @@ const responseLimits = {
   open: { late: 4, urgent: 24 },
   in_progress: { late: 24, urgent: 48 },
 };
+// [nombre, texto, atajo]. Se insertan con "/atajo" en el compositor; {nombre} y {agente} se completan solos.
 const quickReplies = [
-  ['Recibimos tu consulta', '¡Hola! Gracias por escribirnos. Ya estamos revisando tu consulta y te respondemos a la brevedad.'],
-  ['Pedir más datos', 'Para ayudarte mejor, ¿podés contarnos qué pasos seguiste, qué esperabas que pasara y qué ves en pantalla? Si tenés una captura, mejor.'],
-  ['Actualizar la app', 'Probá actualizar la app a la última versión desde la tienda y volvé a intentar. Si el problema sigue, contanos y lo revisamos.'],
-  ['Reiniciar la app', 'Cerrá la app por completo, volvé a abrirla y probá de nuevo. Si no se soluciona, avisanos y seguimos con el caso.'],
-  ['Resuelto', '¡Listo! Dejamos resuelto el problema. Si algo más falla, respondé este mensaje y lo vemos.'],
-  ['Cierre por falta de respuesta', 'Como no tuvimos novedades, vamos a dar el ticket por resuelto. Si todavía lo necesitás, escribinos y lo reabrimos.'],
+  ['Recibimos tu consulta', '¡Hola, {nombre}! Gracias por escribirnos. Ya estamos revisando tu consulta y te respondemos a la brevedad.', 'hola'],
+  ['Presentarme', 'Hola, {nombre}. Soy {agente}, del equipo de UVR Home, y voy a seguir tu caso hasta que quede resuelto.', 'soy'],
+  ['Pedir más datos', 'Para ayudarte mejor, ¿podés contarnos qué pasos seguiste, qué esperabas que pasara y qué ves en pantalla? Si tenés una captura, mejor.', 'datos'],
+  ['Actualizar la app', 'Probá actualizar la app a la última versión desde la tienda y volvé a intentar. Si el problema sigue, contanos y lo revisamos.', 'actualizar'],
+  ['Reiniciar la app', 'Cerrá la app por completo, volvé a abrirla y probá de nuevo. Si no se soluciona, avisanos y seguimos con el caso.', 'reiniciar'],
+  ['Resuelto', '¡Listo, {nombre}! Dejamos resuelto el problema. Si algo más falla, respondé este mensaje y lo vemos.', 'resuelto'],
+  ['Cierre por falta de respuesta', 'Como no tuvimos novedades, vamos a dar el ticket por resuelto. Si todavía lo necesitás, escribinos y lo reabrimos.', 'cierre'],
 ];
+const UNDO_SEND_MS = 5000;
+const DRAFTS_KEY = 'uvr.support.drafts';
+const FILL_IN = '[completar]';
 const sortOptions = [
   ['recent', 'Recientes'],
   ['urgent', 'Urgentes primero'],
@@ -89,6 +94,8 @@ const state = {
   composerMode: 'reply',
   noteDrafts: {},
   threadView: 'all',
+  pendingSend: null,
+  delivering: [],
   unseenTickets: 0,
   pollTimer: null,
   polling: false,
@@ -142,6 +149,60 @@ function renderAvatar(name, avatarPath, size = '') {
 
 function teamMember(userId) {
   return userId ? state.team[userId] || null : null;
+}
+
+function firstWord(value) {
+  return String(value || '').trim().split(/\s+/)[0] || '';
+}
+
+function fillVariables(text, ticket) {
+  const client = firstWord(ticket?.client_name);
+  const agent = firstWord(state.profile?.display_name) || 'el equipo de soporte';
+  return text
+    .replace(/, \{nombre\}/g, client ? `, ${client}` : '')
+    .replace(/\{nombre\}/g, client)
+    .replace(/\{agente\}/g, agent);
+}
+
+const foldText = (value) => String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase('es-AR');
+
+// Los borradores quedan en este navegador, separados por cuenta, para no perderlos al recargar.
+function draftsKey() {
+  const userId = state.session?.user?.id;
+  return userId ? `${DRAFTS_KEY}.${userId}` : '';
+}
+
+function loadDrafts() {
+  state.drafts = {};
+  state.noteDrafts = {};
+  const key = draftsKey();
+  if (!key) return;
+  try {
+    const saved = JSON.parse(localStorage.getItem(key) || '{}');
+    if (saved && typeof saved === 'object') {
+      state.drafts = typeof saved.reply === 'object' && saved.reply ? saved.reply : {};
+      state.noteDrafts = typeof saved.note === 'object' && saved.note ? saved.note : {};
+    }
+  } catch { /* Borradores ilegibles: se arranca de cero. */ }
+}
+
+let draftsTimer = null;
+function saveDrafts() {
+  const key = draftsKey();
+  if (!key) return;
+  window.clearTimeout(draftsTimer);
+  draftsTimer = window.setTimeout(() => {
+    try {
+      if (!Object.keys(state.drafts).length && !Object.keys(state.noteDrafts).length) localStorage.removeItem(key);
+      else localStorage.setItem(key, JSON.stringify({ reply: state.drafts, note: state.noteDrafts }));
+    } catch { /* Sin almacenamiento: los borradores quedan solo en memoria. */ }
+  }, 300);
+}
+
+function clearSavedDrafts() {
+  const key = draftsKey();
+  window.clearTimeout(draftsTimer);
+  try { if (key) localStorage.removeItem(key); } catch { /* Nada que borrar. */ }
 }
 
 function memberName(member, fallback = 'Equipo UVR Home') {
@@ -568,6 +629,9 @@ function renderTicketRow(ticket) {
   const urgency = ticketUrgency(ticket);
   if (urgency) meta.append(element('span', `urgency urgency-${urgency.level}`, urgency.label));
   meta.append(element('span', '', typeNames[ticket.ticket_type] || 'Ayuda'));
+  if (ticket.id !== state.selectedId && (state.drafts[ticket.id] || state.noteDrafts[ticket.id])) {
+    meta.append(element('span', 'ticket-row-draft', 'Borrador'));
+  }
   if (state.role === 'owner') {
     const assignedAgent = state.agents.find((agent) => agent.user_id === ticket.assigned_agent_id);
     meta.append(element('span', 'ticket-row-agent', ticket.assigned_agent_id === state.session?.user?.id
@@ -642,6 +706,33 @@ function renderThread(thread, ticket) {
     }
     previous = item;
   });
+  [...state.delivering, state.pendingSend]
+    .filter((item) => item?.ticketId === ticket.id)
+    .forEach((item) => thread.append(renderOutgoing(item, ticket)));
+}
+
+function renderOutgoing(item, ticket) {
+  const row = renderMessage({
+    author_role: 'support',
+    author_id: state.session?.user?.id,
+    body: item.body,
+    created_at: item.createdAt,
+  }, ticket, false);
+  row.classList.add('is-outgoing');
+  const stack = row.querySelector('.msg-stack');
+  const status = element('div', 'msg-outgoing');
+  if (item === state.pendingSend) {
+    const bar = element('span', 'undo-bar');
+    bar.style.animationDelay = `-${Date.now() - item.queuedAt}ms`;
+    const undo = element('button', 'undo-button', 'Deshacer');
+    undo.type = 'button';
+    undo.addEventListener('click', undoPendingSend);
+    status.append(element('span', '', 'Se envía en unos segundos'), undo, bar);
+  } else {
+    status.append(element('span', 'is-sending', 'Enviando…'));
+  }
+  stack?.append(status);
+  return row;
 }
 
 function actorName(actorId) {
@@ -958,9 +1049,10 @@ function renderDetail(ticket) {
   aiButton.type = 'button';
   aiButton.title = 'La IA arma un borrador para que lo revises. No se envía sola.';
   aiButton.disabled = state.busy;
-  const aiStatus = element('span', 'ai-status is-hint', noteMode
+  const defaultHint = noteMode
     ? 'Solo la ve el equipo · el cliente nunca la recibe'
-    : 'Ctrl + Enter envía · el ticket pasa a “Esperamos respuesta”');
+    : 'Ctrl + Enter envía';
+  const aiStatus = element('span', 'ai-status is-hint', defaultHint);
   aiStatus.setAttribute('role', 'status');
   const textarea = document.createElement('textarea');
   textarea.className = 'reply-input';
@@ -968,36 +1060,183 @@ function renderDetail(ticket) {
   textarea.rows = 1;
   textarea.maxLength = noteMode ? 2000 : 4000;
   textarea.required = true;
-  const firstName = String(ticket.client_name || '').trim().split(/\s+/)[0];
+  const firstName = firstWord(ticket.client_name);
   textarea.placeholder = noteMode
     ? 'Dejá contexto para el equipo. Podés mencionar con @nombre…'
-    : (firstName ? `Escribile a ${firstName}…` : 'Escribile al usuario…');
+    : (firstName ? `Escribile a ${firstName}… (/ para respuestas rápidas)` : 'Escribile al usuario…');
   textarea.setAttribute('aria-label', noteMode ? 'Nota interna' : 'Respuesta');
   textarea.value = drafts[ticket.id] || '';
   const fitTextarea = () => {
     textarea.style.height = 'auto';
     textarea.style.height = `${textarea.scrollHeight + 2}px`;
   };
+
+  // Menú "/": filtra las respuestas rápidas mientras se escribe y reemplaza el atajo por el texto.
+  const slashMenu = element('div', 'quick-list slash-menu');
+  slashMenu.id = `slash-menu-${ticket.id}`;
+  slashMenu.setAttribute('role', 'listbox');
+  slashMenu.setAttribute('aria-label', 'Respuestas rápidas');
+  slashMenu.hidden = true;
+  let slashMatches = [];
+  let slashActive = 0;
+  let slashStart = -1;
+  const closeSlash = () => {
+    slashMenu.hidden = true;
+    slashMatches = [];
+    slashStart = -1;
+    textarea.removeAttribute('aria-activedescendant');
+    textarea.setAttribute('aria-expanded', 'false');
+  };
+  const insertAt = (from, to, text) => {
+    textarea.value = `${textarea.value.slice(0, from)}${text}${textarea.value.slice(to)}`;
+    const caret = from + text.length;
+    textarea.focus();
+    textarea.setSelectionRange(caret, caret);
+    textarea.dispatchEvent(new Event('input'));
+  };
+  const pickSlash = (index) => {
+    const reply = slashMatches[index];
+    if (!reply) return;
+    const from = slashStart;
+    const to = textarea.selectionStart;
+    closeSlash();
+    insertAt(from, to, fillVariables(reply[1], ticket));
+  };
+  const paintSlash = () => {
+    slashMenu.replaceChildren();
+    slashMatches.forEach(([name, text, slug], index) => {
+      const option = element('button', `quick-item${index === slashActive ? ' is-active' : ''}`);
+      option.type = 'button';
+      option.id = `slash-${ticket.id}-${slug}`;
+      option.setAttribute('role', 'option');
+      option.setAttribute('aria-selected', String(index === slashActive));
+      const head = element('span', 'slash-head');
+      head.append(element('strong', '', name), element('kbd', '', `/${slug}`));
+      option.append(head, element('span', '', fillVariables(text, ticket)));
+      option.addEventListener('mousedown', (event) => event.preventDefault());
+      option.addEventListener('click', () => pickSlash(index));
+      slashMenu.append(option);
+    });
+    const active = slashMenu.children[slashActive];
+    if (active) {
+      textarea.setAttribute('aria-activedescendant', active.id);
+      active.scrollIntoView({ block: 'nearest' });
+    }
+  };
+  const updateSlash = () => {
+    if (noteMode) return;
+    const caret = textarea.selectionStart;
+    const match = /(^|\s)\/([\p{L}\p{N}-]*)$/u.exec(textarea.value.slice(0, caret));
+    const query = match ? foldText(match[2]) : '';
+    slashMatches = match
+      ? quickReplies.filter(([name, , slug]) => slug.startsWith(query) || foldText(name).includes(query))
+      : [];
+    if (!slashMatches.length) {
+      closeSlash();
+      return;
+    }
+    slashStart = caret - match[2].length - 1;
+    slashActive = 0;
+    slashMenu.hidden = false;
+    textarea.setAttribute('aria-expanded', 'true');
+    paintSlash();
+  };
+  textarea.setAttribute('aria-controls', slashMenu.id);
+  textarea.setAttribute('aria-expanded', 'false');
+
+  // Los borradores de la IA traen [completar]: Tab salta de uno a otro y no se puede enviar hasta resolverlos.
+  const fillIns = () => (noteMode ? 0 : textarea.value.split(FILL_IN).length - 1);
+  const updateHint = (prefix = '') => {
+    const pending = fillIns();
+    aiStatus.classList.remove('is-error');
+    aiStatus.classList.toggle('is-fill', pending > 0);
+    aiStatus.classList.toggle('is-hint', pending === 0 && !prefix);
+    aiStatus.textContent = pending
+      ? `${prefix}${pending} por completar · Tab`
+      : (prefix ? `${prefix}Revisalo antes de enviar.` : defaultHint);
+  };
+  const selectFillIn = () => {
+    let index = textarea.value.indexOf(FILL_IN, textarea.selectionEnd);
+    if (index < 0) index = textarea.value.indexOf(FILL_IN);
+    if (index < 0) return;
+    textarea.focus();
+    textarea.setSelectionRange(index, index + FILL_IN.length);
+  };
+
+  const submitReply = (andNext = false) => {
+    const body = textarea.value.trim();
+    if (!body || state.busy) {
+      textarea.focus();
+      return;
+    }
+    closeSlash();
+    if (noteMode) {
+      void addNote(ticket.id, body);
+      return;
+    }
+    if (body.includes(FILL_IN)) {
+      aiStatus.classList.remove('is-hint', 'is-fill');
+      aiStatus.classList.add('is-error');
+      aiStatus.textContent = `Completá lo que dice ${FILL_IN} antes de enviar.`;
+      textarea.setSelectionRange(0, 0);
+      selectFillIn();
+      return;
+    }
+    queueReply(ticket, body, andNext);
+  };
+
   textarea.addEventListener('input', () => {
     if (textarea.value) drafts[ticket.id] = textarea.value;
     else delete drafts[ticket.id];
+    saveDrafts();
     fitTextarea();
+    updateSlash();
+    updateHint();
   });
+  textarea.addEventListener('click', updateSlash);
+  textarea.addEventListener('blur', closeSlash);
   if (textarea.value) requestAnimationFrame(fitTextarea);
   textarea.addEventListener('keydown', (event) => {
+    if (!slashMenu.hidden) {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        slashActive = (slashActive + (event.key === 'ArrowDown' ? 1 : -1) + slashMatches.length) % slashMatches.length;
+        paintSlash();
+        return;
+      }
+      if (event.key === 'Tab' || (event.key === 'Enter' && !event.shiftKey && !event.ctrlKey && !event.metaKey)) {
+        event.preventDefault();
+        pickSlash(slashActive);
+        return;
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        closeSlash();
+        return;
+      }
+    }
+    if (event.key === 'Tab' && !event.shiftKey && fillIns()) {
+      event.preventDefault();
+      selectFillIn();
+      return;
+    }
     if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
       event.preventDefault();
-      form.requestSubmit();
+      submitReply(event.shiftKey);
     }
   });
-  quickReplies.forEach(([name, text]) => {
+  quickReplies.forEach(([name, text, slug]) => {
     const chip = element('button', 'quick-item');
     chip.type = 'button';
     chip.disabled = state.busy;
-    chip.append(element('strong', '', name), element('span', '', text));
+    const head = element('span', 'slash-head');
+    head.append(element('strong', '', name), element('kbd', '', `/${slug}`));
+    chip.append(head, element('span', '', fillVariables(text, ticket)));
     chip.addEventListener('click', () => {
       const current = textarea.value.trim();
-      textarea.value = current ? `${current}\n\n${text}` : text;
+      const filled = fillVariables(text, ticket);
+      textarea.value = current ? `${current}\n\n${filled}` : filled;
       quickMenu.open = false;
       textarea.dispatchEvent(new Event('input'));
       textarea.focus();
@@ -1009,7 +1248,7 @@ function renderDetail(ticket) {
     aiButton.disabled = true;
     aiButton.classList.add('is-thinking');
     aiLabel.textContent = 'Pensando…';
-    aiStatus.classList.remove('is-error', 'is-hint');
+    aiStatus.classList.remove('is-error', 'is-hint', 'is-fill');
     aiStatus.textContent = 'Leyendo la conversación…';
     const result = await requestAiDraft(ticket.id);
     aiButton.disabled = state.busy;
@@ -1022,11 +1261,19 @@ function renderDetail(ticket) {
     }
     const current = (state.drafts[ticket.id] || '').trim();
     state.drafts[ticket.id] = current ? `${current}\n\n${result.draft}` : result.draft;
+    saveDrafts();
     if (textarea.isConnected) {
       textarea.value = state.drafts[ticket.id];
+      fitTextarea();
       textarea.focus();
       textarea.setSelectionRange(textarea.value.length, textarea.value.length);
-      aiStatus.textContent = 'Borrador listo. Revisalo y completá lo que diga [completar] antes de enviar.';
+      textarea.classList.add('is-ai-filled');
+      window.setTimeout(() => textarea.classList.remove('is-ai-filled'), 1600);
+      updateHint('✨ ');
+      if (fillIns()) {
+        textarea.setSelectionRange(0, 0);
+        selectFillIn();
+      }
     }
   });
   const bar = element('div', 'composer-tools');
@@ -1036,16 +1283,27 @@ function renderDetail(ticket) {
   send.type = 'submit';
   send.title = 'Ctrl + Enter';
   send.disabled = state.busy;
-  if (noteMode) bar.append(aiStatus, send);
-  else bar.append(quickMenu, aiButton, aiStatus, send);
-  box.append(textarea, bar);
+  const sendGroup = element('div', 'send-group');
+  sendGroup.append(send);
+  if (!noteMode) {
+    const sendNext = element('button', 'send-next');
+    sendNext.type = 'button';
+    sendNext.title = 'Enviar y abrir el próximo pendiente (Ctrl + Shift + Enter)';
+    sendNext.setAttribute('aria-label', 'Enviar y abrir el próximo pendiente');
+    sendNext.append(icon('skip'));
+    sendNext.disabled = state.busy;
+    sendNext.addEventListener('click', () => submitReply(true));
+    sendGroup.append(sendNext);
+  }
+  if (noteMode) bar.append(aiStatus, sendGroup);
+  else bar.append(quickMenu, aiButton, aiStatus, sendGroup);
+  box.append(slashMenu, textarea, bar);
   form.append(modes, box);
-  form.addEventListener('submit', async (event) => {
+  form.addEventListener('submit', (event) => {
     event.preventDefault();
-    const body = new FormData(form).get('reply')?.toString().trim();
-    if (noteMode) await addNote(ticket.id, body);
-    else await sendReply(ticket.id, body);
+    submitReply(false);
   });
+  if (fillIns()) updateHint();
   main.append(form);
   split.append(main);
   if (state.showDetails) split.append(renderClientPanel(ticket, manage));
@@ -2283,8 +2541,11 @@ function isTypingInApp() {
 }
 
 function insertQuickReply(ticketId, text) {
+  const ticket = state.tickets.find((item) => item.id === ticketId);
+  const filled = fillVariables(text, ticket);
   const current = (state.drafts[ticketId] || '').trim();
-  state.drafts[ticketId] = current ? `${current}\n\n${text}` : text;
+  state.drafts[ticketId] = current ? `${current}\n\n${filled}` : filled;
+  saveDrafts();
   state.composerMode = 'reply';
   renderDashboard();
   const area = app.querySelector('.reply-input');
@@ -2329,8 +2590,8 @@ function buildCommands() {
     statuses.filter(([value]) => value !== ticket.status).forEach(([value, label]) => {
       items.push({ group: 'Este ticket', label: `Marcar como: ${label}`, keywords: 'estado cambiar', featured: value === 'resolved', run: () => updateStatus(ticket.id, value) });
     });
-    quickReplies.forEach(([name, text]) => {
-      items.push({ group: 'Respuestas rápidas', label: name, hint: 'Insertar', keywords: `responder ${text}`, run: () => insertQuickReply(ticket.id, text) });
+    quickReplies.forEach(([name, text, slug]) => {
+      items.push({ group: 'Respuestas rápidas', label: name, hint: `/${slug}`, keywords: `responder ${text}`, run: () => insertQuickReply(ticket.id, text) });
     });
   }
   state.tickets.forEach((item) => {
@@ -2615,6 +2876,7 @@ async function selectTicket(ticketId) {
   state.selectedId = ticketId;
   state.quickMenuOpen = false;
   state.threadView = 'all';
+  state.composerMode = 'reply';
   state.error = '';
   state.page = 'tickets';
   syncRoute();
@@ -2650,27 +2912,97 @@ async function requestAiDraft(ticketId) {
   return { draft: result.data.draft.replace(/[ \t]+\n/g, '\n').replace(/^(\S[^\n]{0,30},)\n+/, '$1 ').trim() };
 }
 
-async function sendReply(ticketId, body) {
-  if (!body) return;
-  const userId = state.session?.user?.id;
-  state.busy = true;
+// Las respuestas esperan unos segundos antes de salir para poder deshacerlas, como en el correo.
+function queueReply(ticket, body, andNext) {
+  if (state.pendingSend) void flushPendingSend();
+  const pending = {
+    ticketId: ticket.id,
+    clientName: ticket.client_name,
+    body,
+    createdAt: new Date().toISOString(),
+    queuedAt: Date.now(),
+    timer: 0,
+  };
+  pending.timer = window.setTimeout(() => { void flushPendingSend(); }, UNDO_SEND_MS);
+  state.pendingSend = pending;
+  delete state.drafts[ticket.id];
+  saveDrafts();
   setFeedback();
+  showToast(`Respuesta a ${firstWord(ticket.client_name) || 'el cliente'} en camino`, 'Deshacer', undoPendingSend, UNDO_SEND_MS);
+  if (andNext && openNextPending(ticket.id)) return;
   renderDashboard();
+  app.querySelector('.reply-input')?.focus();
+}
+
+function undoPendingSend() {
+  const pending = state.pendingSend;
+  if (!pending) return;
+  window.clearTimeout(pending.timer);
+  state.pendingSend = null;
+  const current = (state.drafts[pending.ticketId] || '').trim();
+  state.drafts[pending.ticketId] = current ? `${pending.body}\n\n${current}` : pending.body;
+  saveDrafts();
+  state.composerMode = 'reply';
+  if (state.selectedId === pending.ticketId && state.page === 'tickets') renderDashboard();
+  else void selectTicket(pending.ticketId);
+  const input = app.querySelector('.reply-input');
+  input?.focus();
+  input?.setSelectionRange(input.value.length, input.value.length);
+}
+
+async function flushPendingSend() {
+  const pending = state.pendingSend;
+  if (!pending) return;
+  window.clearTimeout(pending.timer);
+  state.pendingSend = null;
+  state.delivering.push(pending);
+  const userId = state.session?.user?.id;
   const { error } = await state.supabase.rpc('reply_support_ticket', {
-    p_ticket_id: ticketId,
-    p_message: body,
+    p_ticket_id: pending.ticketId,
+    p_message: pending.body,
   });
   if (userId !== state.session?.user?.id) return;
-  state.busy = false;
   if (error) {
-    setFeedback(userFacingError(error, 'No pudimos enviar la respuesta. Probá de nuevo.'));
-    renderDashboard();
+    state.delivering = state.delivering.filter((item) => item !== pending);
+    const current = (state.drafts[pending.ticketId] || '').trim();
+    state.drafts[pending.ticketId] = current ? `${pending.body}\n\n${current}` : pending.body;
+    saveDrafts();
+    setFeedback(userFacingError(error, 'No pudimos enviar la respuesta. Quedó como borrador.'));
+    showToast(`No se envió la respuesta a ${firstWord(pending.clientName) || 'el cliente'}. Quedó como borrador.`, 'Abrir', () => selectTicket(pending.ticketId));
+    if (state.authorized) renderDashboard();
     return;
   }
-  setFeedback('', 'Respuesta enviada.');
-  delete state.drafts[ticketId];
-  await Promise.all([loadTickets(), loadMessages(ticketId), loadDashboardStats()]);
+  await Promise.all([
+    loadTickets(),
+    loadDashboardStats(),
+    state.selectedId === pending.ticketId ? loadMessages(pending.ticketId) : null,
+  ]);
+  state.delivering = state.delivering.filter((item) => item !== pending);
+  if (state.authorized && state.page === 'tickets' && state.selectedId === pending.ticketId && !isTypingInApp()) renderDashboard();
 }
+
+function openNextPending(currentId) {
+  const ids = [...app.querySelectorAll('.ticket-row')].map((row) => row.dataset.ticketId);
+  const index = ids.indexOf(currentId);
+  const ordered = index < 0 ? ids : [...ids.slice(index + 1), ...ids.slice(0, index)];
+  const next = ordered
+    .map((id) => state.tickets.find((ticket) => ticket.id === id))
+    .find((ticket) => ticket && ['open', 'in_progress'].includes(ticket.status));
+  if (!next) {
+    setFeedback('', 'No quedan tickets pendientes en esta vista. ¡Bien ahí!');
+    return false;
+  }
+  void selectTicket(next.id);
+  app.querySelector('.reply-input')?.focus();
+  return true;
+}
+
+window.addEventListener('beforeunload', (event) => {
+  if (!state.pendingSend) return;
+  void flushPendingSend();
+  event.preventDefault();
+  event.returnValue = '';
+});
 
 async function addNote(ticketId, body) {
   if (!body) return;
@@ -2712,6 +3044,8 @@ async function updateStatus(ticketId, status) {
 }
 
 async function signOut() {
+  await flushPendingSend();
+  clearSavedDrafts();
   const { error } = await state.supabase.auth.signOut();
   if (error) {
     setFeedback(userFacingError(error, 'No pudimos cerrar la sesión. Probá de nuevo.'));
@@ -2821,6 +3155,7 @@ async function boot() {
   state.mfaFactorId = null;
   state.pendingMfaFactorId = null;
   state.authorized = true;
+  loadDrafts();
   if (state.role !== 'owner' && state.page === 'agents') state.page = 'overview';
   syncRoute({ replace: true });
   startPolling();

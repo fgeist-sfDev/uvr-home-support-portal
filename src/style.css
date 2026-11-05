@@ -1333,6 +1333,42 @@ body { background: #f2f4f1; }
 .composer.is-note .send-button { background: #7a5a12; color: #fff; }
 .composer.is-note .send-button:hover:not(:disabled) { background: #654a0e; }
 
+/* Menú "/" y respuestas rápidas con su atajo visible. */
+.slash-menu[hidden] { display: none; }
+.slash-menu { bottom: calc(100% + 8px); width: min(440px, 100%); }
+.slash-head { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.slash-head kbd { flex: none; padding: 1px 6px; border: 1px solid #dfe6df; border-radius: 6px; background: #f6f8f5; color: #5d6d64; font: 600 11px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; }
+.quick-item.is-active { background: #eaf3ec; box-shadow: inset 3px 0 0 #2d6b58; }
+.quick-item.is-active .slash-head kbd { border-color: #bcd3c4; background: #fff; color: #1d4a3e; }
+
+/* Marcadores [completar] pendientes y destello cuando la IA llena el borrador. */
+.composer .ai-status.is-fill { color: #8a5a00; font-weight: 700; }
+.composer .reply-input.is-ai-filled { animation: ai-fill 1.6s ease-out; }
+@keyframes ai-fill { 0% { background: #f1e9ff; } 100% { background: transparent; } }
+
+/* Enviar + "enviar y siguiente" como un solo botón partido. */
+.send-group { flex: none; display: inline-flex; margin-left: auto; }
+.send-group .send-button { margin-left: 0; }
+.send-group:has(.send-next) .send-button { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.send-next { min-width: 34px; min-height: 36px; display: inline-grid; place-items: center; padding: 0; border: 0; border-left: 1px solid #ffffff2e; border-radius: 0 10px 10px 0; background: var(--forest); color: #dff0e5; cursor: pointer; }
+.send-next .icon { width: 15px; height: 15px; }
+.send-next:hover:not(:disabled) { background: #163a31; color: #fff; }
+.send-next:disabled { opacity: .55; cursor: default; }
+
+/* Respuesta en cola: se puede deshacer mientras corre la barrita. */
+.msg.is-outgoing .msg-bubble { opacity: .78; }
+.msg-outgoing { position: relative; display: flex; align-items: center; gap: 8px; padding: 2px 4px 4px; overflow: hidden; color: #6c7a72; font-size: 11.5px; }
+.msg-outgoing .is-sending { animation: sending-pulse 1.2s ease-in-out infinite; }
+.undo-button { padding: 2px 8px; border: 0; border-radius: 6px; background: #e6efe9; color: #1d4a3e; font-size: 11.5px; font-weight: 800; cursor: pointer; }
+.undo-button:hover { background: #d6e6dc; }
+.undo-bar { position: absolute; right: 4px; bottom: 0; left: 4px; height: 2px; border-radius: 2px; background: #2d6b58; transform-origin: right; animation: undo-countdown 5s linear forwards; }
+@keyframes undo-countdown { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+@keyframes sending-pulse { 50% { opacity: .45; } }
+.ticket-row-draft { padding: 1px 7px; border-radius: 999px; background: #fff3d6; color: #8a5a00; font-size: 11px; font-weight: 700; }
+@media (prefers-reduced-motion: reduce) {
+  .undo-bar, .msg-outgoing .is-sending, .composer .reply-input.is-ai-filled { animation: none; }
+}
+
 @media (max-width: 860px) {
   .thread { padding-block: 4px 16px; }
   .thread-event::before,

@@ -86,6 +86,10 @@ const shapes = {
     ['path', { d: 'M4 8h13l-3-3' }],
     ['path', { d: 'M20 16H7l3 3' }],
   ],
+  skip: [
+    ['path', { d: 'M5 5.5v13l9-6.5z' }],
+    ['path', { d: 'M18 5v14' }],
+  ],
 };
 
 export function icon(name, className = '') {
