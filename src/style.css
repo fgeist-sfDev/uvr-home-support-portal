@@ -1159,7 +1159,7 @@ body { background: #f2f4f1; }
   .section-heading { flex-direction: row; align-items: flex-start; gap: 10px; }
 }
 
-/* Bandeja con aire: menú en riel, detalles plegables, filtros en una fila. */
+/* Bandeja con aire: menÃº en riel, detalles plegables, filtros en una fila. */
 @media (min-width: 861px) {
   .dashboard.is-inbox { grid-template-columns: 72px minmax(0, 1fr); }
   .dashboard.is-inbox .app-header { width: 72px; align-items: center; padding: 18px 10px 14px; }
