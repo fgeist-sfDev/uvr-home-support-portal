@@ -90,6 +90,13 @@ const shapes = {
     ['path', { d: 'M5 5.5v13l9-6.5z' }],
     ['path', { d: 'M18 5v14' }],
   ],
+  sun: [
+    ['circle', { cx: 12, cy: 12, r: 4 }],
+    ['path', { d: 'M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4' }],
+  ],
+  moon: [
+    ['path', { d: 'M20.5 14.2A8.5 8.5 0 0 1 9.8 3.5 8.5 8.5 0 1 0 20.5 14.2z' }],
+  ],
 };
 
 export function icon(name, className = '') {

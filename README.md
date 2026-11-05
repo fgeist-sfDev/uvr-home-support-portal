@@ -46,6 +46,10 @@ Apply migration `20261121000000_support_profiles_and_client_context.sql` before 
 
 `Ctrl/Cmd + K` opens a palette that searches tickets and runs commands: go to a page, filter tickets, take or change the status of the open ticket, insert a quick reply, sign out. In **Tickets**, `J`/`K` move between tickets, `/` focuses the search and `Esc` closes the open ticket (shortcuts are ignored while typing). No backend changes.
 
+## Dark theme and loading states
+
+The portal follows the system theme; the moon/sun button in the account card (or "Usar tema oscuro/claro" in the palette) overrides it and remembers the choice in `localStorage`. The dark styles are generated at build time by `theme-dark.mjs`, a dependency-free Vite plugin that re-maps every color in `src/style.css` (lime and forest surfaces keep their colors); hand-tuned overrides live in `src/theme-dark.css`. While data loads, the inbox, thread, ticket detail and overview show skeletons instead of loading text.
+
 ## Live updates and presence
 
 Apply migration `20261122000000_support_live_presence.sql`. Tickets and messages arrive over Supabase Realtime (`support_tickets` and `support_ticket_messages` are already in the `supabase_realtime` publication, so each person only receives what their RLS allows) and the portal refreshes within about a second. The private `support-live` channel also shows who else is viewing the open ticket; only active, MFA-verified team members can join it. Polling stays as a safety net (every 2 minutes while the live channel is connected, every 30 seconds otherwise).

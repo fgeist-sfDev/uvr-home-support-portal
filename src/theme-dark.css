@@ -1,0 +1,31 @@
+/* Ajustes finos del tema oscuro. La base se genera desde style.css (ver theme-dark.mjs);
+   acá van los tokens y los detalles que una regla automática no resuelve bien. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --accent-ink: #a6dcc4;
+  --ink: #e4ebe7;
+  --muted: #98a69e;
+  --line: #29352f;
+  --surface: #161e1b;
+  --surface-soft: #1a2420;
+  --shadow-card: 0 1px 2px #0000004d, 0 8px 24px #00000033;
+  --glass: #18211ec7;
+  --glass-dark: #0b1512db;
+  --sk-base: #1f2925;
+  --sk-shine: #2a3631;
+  background: #0f1513;
+}
+:root[data-theme="dark"] body { background: #0f1513; }
+
+:root[data-theme="dark"] .thread { background: #111916; }
+:root[data-theme="dark"] .msg-bubble { border-color: #2a3631; background: #1c2622; color: #e4ebe7; box-shadow: none; }
+:root[data-theme="dark"] .msg.from-support .msg-bubble { background: linear-gradient(160deg, #23604f, #1a4b3e); color: #f3f8f4; }
+:root[data-theme="dark"] .sk-msg.is-out .skeleton { --sk-base: #1d3a31; --sk-shine: #275044; }
+:root[data-theme="dark"] .sk-msg.is-out .sk-bubble { background: #1a3129; }
+
+:root[data-theme="dark"] .composer .reply-input.is-ai-filled { animation-name: ai-fill-dark; }
+@keyframes ai-fill-dark { 0% { background: #3a2f57; } 100% { background: transparent; } }
+
+:root[data-theme="dark"] ::selection { background: #2f6f56; color: #fff; }
+
+::view-transition-old(root), ::view-transition-new(root) { animation-duration: .28s; }

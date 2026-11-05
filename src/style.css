@@ -1379,3 +1379,60 @@ body { background: #f2f4f1; }
   .reply-form.composer,
   .detail-split.is-collapsed .composer { padding: 4px 10px calc(10px + env(safe-area-inset-bottom)); }
 }
+
+/* Tokens de vidrio y esqueletos: el tema oscuro los redefine en theme-dark.css. */
+:root {
+  --glass: #ffffffcc;
+  --glass-dark: #0f2a24db;
+  --sk-base: #e9eee7;
+  --sk-shine: #f7f9f5;
+}
+
+.skeleton { display: block; border-radius: 6px; background: linear-gradient(100deg, var(--sk-base) 0 40%, var(--sk-shine) 50%, var(--sk-base) 60% 100%) 0 0 / 300% 100%; animation: sk-shine 1.5s ease-in-out infinite; }
+@keyframes sk-shine { from { background-position: 100% 0; } to { background-position: 0 0; } }
+.sk-line { height: 10px; }
+.sk-avatar { width: 34px; height: 34px; flex: none; border-radius: 50%; }
+.sk-avatar-sm { width: 30px; height: 30px; }
+.sk-name { width: 44%; height: 12px; }
+.sk-time { width: 46px; height: 9px; }
+.sk-subject { margin-top: 5px; }
+.sk-w0 { width: 88%; }
+.sk-w1 { width: 62%; }
+.sk-w2 { width: 76%; }
+.sk-pill { width: 54px; height: 17px; border-radius: 6px; }
+.sk-meta { width: 96px; height: 9px; }
+.sk-title { width: min(300px, 70%); height: 16px; }
+.ticket-row-skeleton { pointer-events: none; }
+.ticket-row-skeleton .ticket-row-top { align-items: center; }
+.ticket-row-skeleton .ticket-row-meta { display: flex; align-items: center; gap: 8px; margin-top: 5px; }
+.ticket-row-skeleton:nth-of-type(n + 4) { opacity: .7; }
+.ticket-row-skeleton:nth-of-type(n + 6) { opacity: .45; }
+.thread-skeleton { display: flex; flex-direction: column; gap: 22px; padding-top: 22px; }
+.sk-msg { width: min(58%, 460px); display: flex; align-items: flex-end; gap: 10px; }
+.sk-msg.is-out { align-self: flex-end; }
+.sk-bubble { flex: 1; display: grid; gap: 9px; padding: 15px 16px; border: 1px solid var(--line); border-radius: 18px 18px 18px 6px; background: var(--surface); }
+.sk-msg.is-out .sk-bubble { border-color: transparent; border-radius: 18px 18px 6px 18px; background: var(--sk-base); }
+.sk-msg.is-out .skeleton { --sk-base: #dce5de; --sk-shine: #edf2ee; }
+.detail-skeleton .detail-title-text { display: grid; gap: 9px; flex: 1; }
+.overview-skeleton .sk-card { grid-template: none; gap: 14px; min-height: 118px; }
+.sk-label { width: 62%; }
+.sk-number { width: 38px; height: 26px; border-radius: 8px; }
+.sk-panel { display: grid; align-content: start; gap: 14px; min-height: 320px; }
+.sk-panel .sk-meta { width: 44%; margin-bottom: 10px; }
+.sk-row { height: 36px; border-radius: 10px; }
+@media (max-width: 860px) {
+  .sk-msg { width: 82%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .skeleton { animation: none; }
+}
+
+/* Vidrio solo en capas flotantes, donde el contenido pasa por detrás: no se aplica a paneles fijos para cuidar el rendimiento. */
+@supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
+  .palette { background: var(--glass); -webkit-backdrop-filter: blur(20px) saturate(1.6); backdrop-filter: blur(20px) saturate(1.6); }
+  .toast { background: var(--glass-dark); -webkit-backdrop-filter: blur(14px) saturate(1.4); backdrop-filter: blur(14px) saturate(1.4); }
+  .slash-menu { background: var(--glass); -webkit-backdrop-filter: blur(16px) saturate(1.5); backdrop-filter: blur(16px) saturate(1.5); }
+  @media (max-width: 1279px) {
+    .detail-split > .client-panel { background: var(--glass); -webkit-backdrop-filter: blur(18px) saturate(1.5); backdrop-filter: blur(18px) saturate(1.5); }
+  }
+}

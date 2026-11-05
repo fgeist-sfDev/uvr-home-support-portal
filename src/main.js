@@ -1,6 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 import '@fontsource-variable/inter';
 import './style.css';
+import './theme-dark.css';
 import { icon } from './icons.js';
 import { closePalette, isPaletteOpen, openPalette } from './palette.js';
 import { createLiveChannel } from './realtime.js';
@@ -91,6 +92,9 @@ const state = {
   loadingMore: false,
   drafts: {},
   activity: [],
+  threadFor: null,
+  threadError: null,
+  ticketsFailed: false,
   composerMode: 'reply',
   noteDrafts: {},
   threadView: 'all',
@@ -118,6 +122,50 @@ const state = {
   mfaQrCode: '',
   mfaSecret: '',
 };
+
+const THEME_KEY = 'uvr-support-theme';
+const systemDark = window.matchMedia('(prefers-color-scheme: dark)');
+let sessionTheme = null;
+
+function savedTheme() {
+  try {
+    const value = localStorage.getItem(THEME_KEY);
+    return value === 'dark' || value === 'light' ? value : sessionTheme;
+  } catch {
+    return sessionTheme;
+  }
+}
+
+function currentTheme() {
+  return savedTheme() || (systemDark.matches ? 'dark' : 'light');
+}
+
+function applyTheme() {
+  document.documentElement.dataset.theme = currentTheme();
+}
+
+function toggleTheme() {
+  sessionTheme = currentTheme() === 'dark' ? 'light' : 'dark';
+  try {
+    localStorage.setItem(THEME_KEY, sessionTheme);
+  } catch {
+    // Sin localStorage el cambio dura hasta recargar.
+  }
+  const swap = () => {
+    applyTheme();
+    if (state.authorized) renderDashboard();
+  };
+  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (document.startViewTransition && !reduceMotion) document.startViewTransition(swap);
+  else swap();
+}
+
+applyTheme();
+systemDark.addEventListener('change', () => {
+  if (savedTheme()) return;
+  applyTheme();
+  if (state.authorized) renderDashboard();
+});
 
 function element(tag, className, text) {
   const item = document.createElement(tag);
@@ -605,6 +653,7 @@ function renderAccessCheck() {
   state.tickets = [];
   state.messages = [];
   state.activity = [];
+  state.threadFor = null;
   state.agents = [];
   state.dashboardStats = null;
   state.messageRequest += 1;
@@ -612,6 +661,76 @@ function renderAccessCheck() {
   state.agentRequest += 1;
   state.statsRequest += 1;
   app.replaceChildren(element('main', 'loading', 'Verificando permisos…'));
+}
+
+function skeleton(className) {
+  const block = element('span', `skeleton ${className}`);
+  block.setAttribute('aria-hidden', 'true');
+  return block;
+}
+
+function renderTicketRowSkeleton(index) {
+  const row = element('div', 'ticket-row ticket-row-skeleton');
+  row.setAttribute('aria-hidden', 'true');
+  const body = element('span', 'ticket-row-body');
+  const top = element('span', 'ticket-row-top');
+  top.append(skeleton('sk-line sk-name'), skeleton('sk-line sk-time'));
+  const meta = element('span', 'ticket-row-meta');
+  meta.append(skeleton('sk-pill'), skeleton('sk-line sk-meta'));
+  body.append(top, skeleton(`sk-line sk-subject sk-w${index % 3}`), meta);
+  row.append(skeleton('sk-avatar'), body);
+  return row;
+}
+
+function renderThreadSkeleton() {
+  const wrap = element('div', 'thread-skeleton');
+  wrap.setAttribute('aria-hidden', 'true');
+  [['in', 2], ['out', 1], ['in', 1], ['out', 2]].forEach(([side, lines], index) => {
+    const item = element('div', `sk-msg is-${side}`);
+    if (side === 'in') item.append(skeleton('sk-avatar sk-avatar-sm'));
+    const bubble = element('div', 'sk-bubble');
+    for (let line = 0; line < lines; line += 1) bubble.append(skeleton(`sk-line sk-w${(index + line) % 3}`));
+    item.append(bubble);
+    wrap.append(item);
+  });
+  return wrap;
+}
+
+function renderDetailSkeleton() {
+  const panel = element('section', 'detail-panel detail-skeleton');
+  panel.setAttribute('aria-busy', 'true');
+  panel.setAttribute('aria-label', 'Cargando ticket');
+  const header = element('header', 'detail-bar');
+  const title = element('div', 'detail-title');
+  const text = element('div', 'detail-title-text');
+  text.append(skeleton('sk-line sk-title'), skeleton('sk-line sk-meta'));
+  title.append(skeleton('sk-avatar'), text);
+  header.append(title);
+  const thread = element('div', 'thread');
+  thread.append(renderThreadSkeleton());
+  panel.append(header, thread);
+  return panel;
+}
+
+function renderOverviewSkeleton() {
+  const wrap = element('div', 'overview-skeleton');
+  wrap.setAttribute('aria-busy', 'true');
+  wrap.append(element('span', 'sr-only', 'Cargando tus estadísticas…'));
+  const metrics = element('div', 'overview-metrics');
+  for (let index = 0; index < 5; index += 1) {
+    const card = element('div', 'stat-card sk-card');
+    card.append(skeleton('sk-line sk-label'), skeleton('sk-line sk-number'), skeleton('sk-line sk-meta'));
+    metrics.append(card);
+  }
+  const cards = element('div', 'overview-grid sk-panels');
+  [5, 4].forEach((rows) => {
+    const card = element('div', 'overview-card sk-panel');
+    card.append(skeleton('sk-line sk-title'), skeleton('sk-line sk-meta'));
+    for (let index = 0; index < rows; index += 1) card.append(skeleton(`sk-line sk-row sk-w${index % 3}`));
+    cards.append(card);
+  });
+  wrap.append(metrics, cards);
+  return wrap;
 }
 
 function renderTicketRow(ticket) {
@@ -1005,8 +1124,17 @@ function renderDetail(ticket) {
 
   const thread = element('div', 'thread');
   thread.dataset.ticketId = ticket.id;
-  renderThread(thread, ticket);
-  if (!state.messages.length && !state.activity.length) thread.append(element('p', 'muted thread-empty', 'Todavía no hay mensajes.'));
+  if (state.threadFor !== ticket.id) {
+    thread.setAttribute('aria-busy', 'true');
+    thread.append(renderThreadSkeleton());
+  } else {
+    renderThread(thread, ticket);
+    if (!state.messages.length && !state.activity.length) {
+      thread.append(element('p', 'muted thread-empty', state.threadError === ticket.id
+        ? 'No pudimos cargar la conversación. Probá actualizar.'
+        : 'Todavía no hay mensajes.'));
+    }
+  }
   const split = element('div', state.showDetails ? 'detail-split' : 'detail-split is-collapsed');
   const main = element('div', 'detail-main');
   const threadFilter = renderThreadFilter();
@@ -2069,7 +2197,7 @@ function renderOverview(content) {
   renderFeedback(content);
 
   if (!stats) {
-    content.append(element('div', 'overview-loading', 'Cargando tus estadísticas…'));
+    content.append(renderOverviewSkeleton());
     return;
   }
 
@@ -2200,6 +2328,7 @@ function closeTicket() {
   state.selectedId = null;
   state.messages = [];
   state.activity = [];
+  state.threadFor = null;
   syncRoute({ replace: true });
   renderDashboard();
 }
@@ -2231,6 +2360,7 @@ window.addEventListener('popstate', () => {
   if (state.role !== 'owner' && state.page === 'agents') state.page = 'overview';
   state.messages = [];
   state.activity = [];
+  state.threadFor = null;
   renderDashboard();
   if (state.page === 'tickets' && state.selectedId) void loadMessages(state.selectedId);
 });
@@ -2271,7 +2401,14 @@ function renderDashboard() {
   logout.setAttribute('aria-label', 'Cerrar sesión');
   logout.append(icon('logout'));
   logout.addEventListener('click', signOut);
-  accountCard.append(me, logout);
+  const dark = currentTheme() === 'dark';
+  const themeButton = element('button', 'logout-button theme-button');
+  themeButton.type = 'button';
+  themeButton.title = dark ? 'Usar tema claro' : 'Usar tema oscuro';
+  themeButton.setAttribute('aria-label', themeButton.title);
+  themeButton.append(icon(dark ? 'sun' : 'moon'));
+  themeButton.addEventListener('click', toggleTheme);
+  accountCard.append(me, themeButton, logout);
   account.append(cmdButton, accountCard);
   const nav = element('nav', 'header-nav');
   nav.setAttribute('aria-label', 'Secciones');
@@ -2325,9 +2462,12 @@ function renderDashboard() {
   const inboxHeading = element('div', 'inbox-heading');
   const inboxTitle = element('div', '');
   const total = state.ticketTotal || state.tickets.length;
+  const loadingTickets = !state.ticketsLoaded && !state.ticketsFailed;
   inboxTitle.append(
     element('h1', '', 'Bandeja'),
-    element('p', '', `${total.toLocaleString('es-AR')} ${total === 1 ? 'conversación' : 'conversaciones'}`)
+    element('p', '', loadingTickets
+      ? 'Cargando conversaciones…'
+      : `${total.toLocaleString('es-AR')} ${total === 1 ? 'conversación' : 'conversaciones'}`)
   );
   inboxHeading.append(inboxTitle);
   const tools = element('div', 'list-tools');
@@ -2410,6 +2550,9 @@ function renderDashboard() {
   if (selected) {
     shell.classList.add('has-ticket');
     columns.append(renderDetail(selected));
+  } else if (state.selectedId && !state.ticketsLoaded && !state.ticketsFailed) {
+    shell.classList.add('has-ticket');
+    columns.append(renderDetailSkeleton());
   } else {
     const empty = element('section', 'detail-empty');
     empty.append(element('div', 'empty-icon', '✓'), element('h2', '', 'Elegí un ticket'));
@@ -2469,6 +2612,13 @@ function renderTicketResults(list, heading) {
   });
   heading.append(sortButton);
   list.replaceChildren(heading);
+  if (!state.ticketsLoaded && !state.ticketsFailed) {
+    heading.replaceChildren(element('span', '', 'Cargando tickets…'));
+    list.setAttribute('aria-busy', 'true');
+    for (let index = 0; index < 6; index += 1) list.append(renderTicketRowSkeleton(index));
+    return;
+  }
+  list.removeAttribute('aria-busy');
   if (!visible.length) {
     const emptyList = element('div', 'ticket-empty');
     const emptyMessage = state.tickets.length
@@ -2508,6 +2658,7 @@ async function loadTickets() {
   const { data, count, error } = await fetchTicketPage(state.ticketLimit);
   if (requestId !== state.ticketRequest || userId !== state.session?.user?.id || !state.authorized) return;
   if (error) {
+    state.ticketsFailed = !state.ticketsLoaded;
     setFeedback(userFacingError(error, 'No pudimos cargar los tickets. Probá de nuevo.'));
     renderDashboard();
     return;
@@ -2515,6 +2666,7 @@ async function loadTickets() {
   state.tickets = data || [];
   state.ticketTotal = count ?? state.tickets.length;
   state.ticketsLoaded = true;
+  state.ticketsFailed = false;
   if (state.selectedId && !state.tickets.some((ticket) => ticket.id === state.selectedId)) {
     state.selectedId = null;
     syncRoute({ replace: true });
@@ -2605,6 +2757,7 @@ function buildCommands() {
   });
   items.push(
     { group: 'Cuenta', label: 'Ver atajos de teclado', keywords: 'ayuda teclas', run: () => showToast('J / K: ticket siguiente o anterior · R: responder · N: nota interna · /: buscar · Esc: cerrar ticket · Ctrl K: paleta', '', null, 15000) },
+    { group: 'Cuenta', label: currentTheme() === 'dark' ? 'Usar tema claro' : 'Usar tema oscuro', keywords: 'modo noche oscuro claro apariencia tema', run: toggleTheme },
     { group: 'Cuenta', label: 'Salir', keywords: 'cerrar sesion logout', run: signOut }
   );
   return items;
@@ -2709,6 +2862,8 @@ async function pollSupport() {
       if (!thread.error && userId === state.session?.user?.id && state.selectedId === ticketId) {
         state.messages = thread.messages;
         state.activity = thread.activity;
+        state.threadFor = ticketId;
+        state.threadError = null;
       }
     }
     await resolveAvatarUrls();
@@ -2816,6 +2971,7 @@ function resetTicketView() {
   state.ticketLimit = TICKET_PAGE_SIZE;
   state.ticketTotal = 0;
   state.ticketsLoaded = false;
+  state.ticketsFailed = false;
   state.loadingMore = false;
   state.drafts = {};
   state.profile = null;
@@ -2862,12 +3018,18 @@ async function loadMessages(ticketId) {
     || !state.authorized
   ) return;
   if (error) {
+    if (state.threadFor !== ticketId) {
+      state.threadFor = ticketId;
+      state.threadError = ticketId;
+    }
     setFeedback(userFacingError(error, 'No pudimos cargar los mensajes. Probá de nuevo.'));
     renderDashboard();
     return;
   }
   state.messages = messages;
   state.activity = activity;
+  state.threadFor = ticketId;
+  state.threadError = null;
   renderDashboard();
 }
 
@@ -2884,6 +3046,7 @@ async function selectTicket(ticketId) {
   updateDocumentTitle();
   state.messages = [];
   state.activity = [];
+  state.threadFor = null;
   renderDashboard();
   if (pageChanged) {
     app.querySelector('.dashboard-main')?.focus({ preventScroll: true });
@@ -3059,6 +3222,7 @@ async function signOut() {
   state.tickets = [];
   state.messages = [];
   state.activity = [];
+  state.threadFor = null;
   state.agents = [];
   state.dashboardStats = null;
   state.selectedId = null;
@@ -3083,6 +3247,7 @@ async function boot() {
     state.tickets = [];
     state.messages = [];
     state.activity = [];
+    state.threadFor = null;
     state.agents = [];
     state.dashboardStats = null;
     state.messageRequest += 1;
@@ -3188,6 +3353,7 @@ if (!url || !publishableKey) {
       state.tickets = [];
       state.messages = [];
       state.activity = [];
+      state.threadFor = null;
       state.agents = [];
       state.dashboardStats = null;
       state.selectedId = null;
