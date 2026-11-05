@@ -22,8 +22,10 @@ export function createLiveChannel({ supabase, userId, onChange, onPresence, onSt
   const presence = () => {
     const byTicket = {};
     const typingByTicket = {};
+    const online = [];
     for (const [key, metas] of Object.entries(channel?.presenceState() || {})) {
       if (key === userId) continue;
+      if (metas?.length) online.push(key);
       for (const meta of metas) {
         if (typeof meta?.ticket !== 'string') continue;
         (byTicket[meta.ticket] ||= new Set()).add(key);
@@ -33,6 +35,7 @@ export function createLiveChannel({ supabase, userId, onChange, onPresence, onSt
     return {
       viewers: Object.fromEntries(Object.entries(byTicket).map(([id, people]) => [id, [...people]])),
       typing: typingByTicket,
+      online,
     };
   };
 
@@ -51,7 +54,7 @@ export function createLiveChannel({ supabase, userId, onChange, onPresence, onSt
       subscribed = status === 'SUBSCRIBED';
       onStatus(subscribed);
       if (subscribed) announce();
-      else onPresence({ viewers: {}, typing: {} });
+      else onPresence({ viewers: {}, typing: {}, online: [] });
     });
 
   return {

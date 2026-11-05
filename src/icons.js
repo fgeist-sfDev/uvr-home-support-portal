@@ -128,6 +128,17 @@ const shapes = {
   test: [
     ['path', { d: 'M22 2 11 13M22 2l-7 20-4-9-9-4z' }],
   ],
+  alert: [
+    ['path', { d: 'M10.3 3.9 2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0' }],
+    ['path', { d: 'M12 9v4M12 17h.01' }],
+  ],
+  pulse: [
+    ['path', { d: 'M3 12h4l3-7 4 14 3-7h4' }],
+  ],
+  eye: [
+    ['path', { d: 'M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12' }],
+    ['circle', { cx: 12, cy: 12, r: 3 }],
+  ],
 };
 
 export function icon(name, className = '') {

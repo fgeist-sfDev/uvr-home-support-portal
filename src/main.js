@@ -45,6 +45,7 @@ const responseLimits = {
   open: { late: 4, urgent: 24 },
   in_progress: { late: 24, urgent: 48 },
 };
+const TOWER_ROWS = 6;
 // [nombre, texto, atajo]. Se insertan con "/atajo" en el compositor; {nombre} y {agente} se completan solos.
 const quickReplies = [
   ['Recibimos tu consulta', '¡Hola, {nombre}! Gracias por escribirnos. Ya estamos revisando tu consulta y te respondemos a la brevedad.', 'hola'],
@@ -133,6 +134,7 @@ const state = {
   liveOk: false,
   viewers: {},
   typing: {},
+  online: [],
   mentionsSince: null,
   page: 'overview',
   busy: false,
@@ -224,6 +226,13 @@ function renderAvatar(name, avatarPath, size = '') {
 function teamMember(userId) {
   return userId ? state.team[userId] || null : null;
 }
+
+// Propietario y supervisión ven todos los tickets y reasignan; administrar el equipo es solo del propietario.
+function isLead() {
+  return state.role === 'owner' || state.role === 'supervisor';
+}
+
+const roleNames = { owner: 'Propietario', supervisor: 'Supervisión', agent: 'Agente' };
 
 function firstWord(value) {
   return String(value || '').trim().split(/\s+/)[0] || '';
@@ -995,12 +1004,13 @@ function renderTicketRow(ticket) {
   if (ticket.id !== state.selectedId && (state.drafts[ticket.id] || state.noteDrafts[ticket.id])) {
     meta.append(element('span', 'ticket-row-draft', 'Borrador'));
   }
-  if (state.role === 'owner') {
+  if (isLead()) {
     const assignedAgent = state.agents.find((agent) => agent.user_id === ticket.assigned_agent_id);
+    const assignedName = memberName(teamMember(ticket.assigned_agent_id), assignedAgent?.email);
     meta.append(element('span', 'ticket-row-agent', ticket.assigned_agent_id === state.session?.user?.id
       ? 'Tomado por vos'
       : assignedAgent
-      ? `${assignedAgent.email}${assignedAgent.removed_at ? ' · fuera del equipo' : ''}`
+      ? `${assignedName}${assignedAgent.removed_at ? ' · fuera del equipo' : ''}`
       : 'Sin asignar'));
   } else if (!ticket.assigned_agent_id) {
     meta.append(element('span', 'ticket-row-agent', 'Sin asignar'));
@@ -1472,7 +1482,7 @@ function renderDetail(ticket) {
     label.append(element('span', '', labelText), control);
     manageFields.append(label);
   };
-  if (state.role === 'owner') {
+  if (isLead()) {
     const assignment = document.createElement('select');
     assignment.className = 'status-select';
     assignment.setAttribute('aria-label', 'Agente asignado');
@@ -1484,7 +1494,7 @@ function renderDetail(ticket) {
     activeAgents.forEach((agent) => {
       const option = document.createElement('option');
       option.value = agent.user_id;
-      option.textContent = agent.email;
+      option.textContent = memberName(teamMember(agent.user_id), agent.email);
       assignment.append(option);
     });
     const myId = state.session?.user?.id;
@@ -1492,8 +1502,16 @@ function renderDetail(ticket) {
     if (takenByMe) {
       const mine = document.createElement('option');
       mine.value = myId;
-      mine.textContent = 'Vos (propietario)';
+      mine.textContent = `Vos (${roleNames[state.role].toLocaleLowerCase('es-AR')})`;
       assignment.append(mine);
+    }
+    const otherLead = state.agents.find((agent) => agent.user_id === ticket.assigned_agent_id && agent.user_id !== myId && agent.role !== 'agent' && !agent.removed_at);
+    if (otherLead) {
+      const option = document.createElement('option');
+      option.value = otherLead.user_id;
+      option.textContent = `${memberName(teamMember(otherLead.user_id), otherLead.email)} (${roleNames[otherLead.role].toLocaleLowerCase('es-AR')})`;
+      option.disabled = true;
+      assignment.append(option);
     }
     if (!activeAgents.length && !takenByMe) unassigned.textContent = 'Sin asignar · sin agentes activos';
     const historicalAgent = state.agents.find((agent) => agent.user_id === ticket.assigned_agent_id && agent.removed_at);
@@ -1527,7 +1545,7 @@ function renderDetail(ticket) {
   const takenByMeNow = ticket.assigned_agent_id === state.session?.user?.id;
   const canTake = !takenByMeNow
     && !['resolved', 'closed'].includes(ticket.status)
-    && (state.role === 'owner' || !ticket.assigned_agent_id);
+    && (isLead() || !ticket.assigned_agent_id);
   if (canTake) {
     const take = element('button', 'primary-button take-button', 'Tomar ticket');
     take.type = 'button';
@@ -2043,7 +2061,7 @@ function renderProfile(content) {
   const facts = element('dl', 'profile-facts');
   [
     ['Correo', state.session?.user?.email || profile.email],
-    ['Rol', profile.role === 'owner' ? 'Propietario' : 'Agente'],
+    ['Rol', roleNames[profile.role] || 'Agente'],
     ['En el equipo desde', formatMonthYear(profile.created_at)],
   ].forEach(([label, value]) => {
     const row = element('div', '');
@@ -2070,10 +2088,13 @@ function renderProfile(content) {
 
 function renderAgentManagement(content) {
   const listedAgents = state.agents.filter((agent) => !agent.removed_at);
-  const agents = listedAgents.filter((agent) => agent.role === 'agent');
+  const members = listedAgents.filter((agent) => agent.role !== 'owner');
+  const agents = members.filter((agent) => agent.role === 'agent');
+  const activeMembers = members.filter((agent) => agent.active);
   const activeAgents = agents.filter((agent) => agent.active);
   const availableAgents = activeAgents.filter((agent) => agent.available);
-  const activeTickets = agents.reduce((total, agent) => total + (Number(agent.active_tickets) || 0), 0);
+  const activeTickets = members.reduce((total, agent) => total + (Number(agent.active_tickets) || 0), 0);
+  const supervisors = activeMembers.length - activeAgents.length;
 
   const hero = element('section', 'team-hero');
   const introduction = element('div', 'team-hero-copy');
@@ -2094,7 +2115,7 @@ function renderAgentManagement(content) {
 
   const metrics = element('section', 'team-metrics');
   metrics.append(
-    renderAgentMetric('Accesos activos', activeAgents.length, 'Personas habilitadas', 'team-metric-active', 'shield'),
+    renderAgentMetric('Accesos activos', activeMembers.length, supervisors ? `${supervisors} en supervisión` : 'Personas habilitadas', 'team-metric-active', 'shield'),
     renderAgentMetric('Disponibles', availableAgents.length, 'Pueden recibir tickets', 'team-metric-ready', 'check'),
     renderAgentMetric('En pausa', activeAgents.length - availableAgents.length, 'Sin nuevas asignaciones', 'team-metric-paused', 'pause'),
     renderAgentMetric('Casos activos', activeTickets, 'Asignados al equipo', 'team-metric-tickets', 'ticket')
@@ -2171,7 +2192,8 @@ function renderAgentManagement(content) {
   list.append(listHeading);
   listedAgents.forEach((agent) => {
     const owner = agent.role === 'owner';
-    const row = element('article', `agent-card${owner ? ' is-owner' : ''}${!agent.active && !owner ? ' is-disabled' : ''}`);
+    const supervisor = agent.role === 'supervisor';
+    const row = element('article', `agent-card${owner ? ' is-owner' : ''}${supervisor ? ' is-supervisor' : ''}${!agent.active && !owner ? ' is-disabled' : ''}`);
     const identity = element('div', 'agent-card-identity');
     const member = teamMember(agent.user_id);
     const initialsText = member?.display_name
@@ -2185,10 +2207,10 @@ function renderAgentManagement(content) {
     const name = element('strong', 'agent-email', owner ? `${shownName} · Vos` : shownName);
     const meta = element('div', 'agent-card-meta');
     if (member?.display_name) meta.append(element('span', 'agent-mail', agent.email));
-    meta.append(element('span', `agent-role${owner ? ' is-owner' : ''}`, owner ? 'Propietario' : 'Agente'));
+    meta.append(element('span', `agent-role${owner ? ' is-owner' : supervisor ? ' is-supervisor' : ''}`, roleNames[agent.role] || 'Agente'));
     if (!owner) {
-      const status = !agent.active ? 'Acceso deshabilitado' : agent.available ? 'Disponible' : 'En pausa';
-      meta.append(element('span', `agent-state${!agent.active ? ' is-disabled' : agent.available ? ' is-available' : ' is-paused'}`, status));
+      const status = !agent.active ? 'Acceso deshabilitado' : supervisor ? 'Ve todo el equipo' : agent.available ? 'Disponible' : 'En pausa';
+      meta.append(element('span', `agent-state${!agent.active ? ' is-disabled' : supervisor ? ' is-supervising' : agent.available ? ' is-available' : ' is-paused'}`, status));
     }
     details.append(name, meta);
     if (member?.bio) details.append(element('span', 'agent-bio', member.bio));
@@ -2205,8 +2227,19 @@ function renderAgentManagement(content) {
     }
     identity.append(details);
     row.append(identity);
-    if (agent.role === 'agent') {
+    if (!owner) {
       const actions = element('div', 'agent-actions');
+      if (agent.active) {
+        const promote = element('button', 'secondary-button role-button', supervisor ? 'Volver a agente' : 'Hacer supervisor');
+        promote.type = 'button';
+        promote.disabled = state.busy;
+        promote.title = supervisor
+          ? 'Vuelve a recibir tickets automáticos y deja de ver los del resto del equipo.'
+          : 'Ve y reasigna todos los tickets, sin administrar el equipo ni recibir tickets automáticos.';
+        promote.setAttribute('aria-label', `${supervisor ? 'Volver a agente' : 'Hacer supervisor'} a ${agent.email}`);
+        promote.addEventListener('click', () => void setAgentRole(agent, supervisor ? 'agent' : 'supervisor'));
+        actions.append(promote);
+      }
       const toggle = element('button', agent.active ? 'secondary-button' : 'primary-button', agent.active ? 'Deshabilitar' : 'Rehabilitar');
       toggle.type = 'button';
       toggle.disabled = state.busy;
@@ -2225,7 +2258,7 @@ function renderAgentManagement(content) {
     }
     list.append(row);
   });
-  if (!agents.length) {
+  if (!members.length) {
     const empty = element('div', 'team-empty');
     empty.append(
       element('span', 'team-empty-mark', '+'),
@@ -2311,7 +2344,7 @@ async function supportFunctionError(error) {
 }
 
 async function loadAgents() {
-  if (!state.authorized || state.role !== 'owner') return;
+  if (!state.authorized || !isLead()) return;
   const requestId = ++state.agentRequest;
   const userId = state.session?.user?.id;
   const { data, error } = await state.supabase.rpc('list_support_agents');
@@ -2603,6 +2636,30 @@ async function setAgentActive(agent, active) {
   await Promise.all([loadAgents(), loadTickets(), loadDashboardStats()]);
 }
 
+async function setAgentRole(agent, role) {
+  if (state.busy) return;
+  const userId = state.session?.user?.id;
+  state.busy = true;
+  setFeedback();
+  renderDashboard();
+  const { error } = await state.supabase.rpc('set_support_agent_role', {
+    p_user_id: agent.user_id,
+    p_role: role,
+  });
+  if (userId !== state.session?.user?.id) return;
+  state.busy = false;
+  const name = memberName(teamMember(agent.user_id), agent.email);
+  if (error) {
+    setFeedback(userFacingError(error, 'No pudimos cambiar el rol. Probá de nuevo.'));
+    renderDashboard();
+    return;
+  }
+  setFeedback('', role === 'supervisor'
+    ? `${name} ahora supervisa: ve y reasigna todos los tickets. Deja de recibir tickets automáticos.`
+    : `${name} volvió a ser agente y vuelve a recibir tickets automáticos.`);
+  await Promise.all([loadAgents(), loadDashboardStats()]);
+}
+
 async function removeSupportAgent(agent) {
   if (state.busy) return;
   const userId = state.session?.user?.id;
@@ -2812,9 +2869,17 @@ function renderOverview(content) {
   const firstName = rawName.includes('@') ? '' : rawName.split(/\s+/)[0];
   const today = new Intl.DateTimeFormat('es-AR', { weekday: 'long', day: 'numeric', month: 'long' }).format(new Date());
   const pending = Number(stats?.active) || 0;
-  const unassigned = state.role === 'owner' ? Number(stats?.unassigned) || 0 : 0;
+  const unassigned = isLead() ? Number(stats?.unassigned) || 0 : 0;
   let summary = 'Cargando cómo viene el día…';
-  if (stats) {
+  if (stats && state.role === 'supervisor') {
+    const tower = towerSnapshot();
+    const parts = [
+      tower.atRisk.length ? `${tower.atRisk.length} ${tower.atRisk.length === 1 ? 'ticket en riesgo' : 'tickets en riesgo'}` : 'Sin tickets en riesgo',
+      unassigned ? `${unassigned} sin asignar` : 'cola vacía',
+      `${tower.onlineCount} de ${tower.team.length} ${tower.team.length === 1 ? 'agente' : 'agentes'} en línea`,
+    ];
+    summary = `${parts[0]}, ${parts[1]} y ${parts[2]}.`;
+  } else if (stats) {
     summary = pending
       ? `${pending} ${pending === 1 ? 'ticket necesita' : 'tickets necesitan'} atención${unassigned ? ` y ${unassigned} ${unassigned === 1 ? 'espera' : 'esperan'} asignación` : ''}.`
       : 'Bandeja al día. No hay tickets que requieran atención.';
@@ -2849,6 +2914,11 @@ function renderOverview(content) {
 
   if (!stats) {
     content.append(renderOverviewSkeleton());
+    return;
+  }
+
+  if (state.role === 'supervisor') {
+    renderControlTower(content, stats);
     return;
   }
 
@@ -2892,6 +2962,13 @@ function renderOverview(content) {
   primary.append(recent, renderStatusBreakdown(stats));
   content.append(primary);
 
+  const secondary = element('div', state.role === 'owner' ? 'overview-grid' : 'overview-grid is-single');
+  secondary.append(renderVolumeCard(stats));
+  if (state.role === 'owner') secondary.append(renderAgentWorkload(stats));
+  content.append(secondary);
+}
+
+function renderVolumeCard(stats) {
   const volume = element('section', 'overview-card volume-card');
   const volumeHeading = element('div', 'section-heading');
   const volumeTitle = element('div', '');
@@ -2899,10 +2976,244 @@ function renderOverview(content) {
   volumeTitle.append(element('p', 'muted', 'Tickets creados durante los últimos 7 días.'));
   volumeHeading.append(volumeTitle, element('span', 'chart-period', '7 DÍAS'));
   volume.append(volumeHeading, renderDailyChart(stats.daily));
-  const secondary = element('div', state.role === 'owner' ? 'overview-grid' : 'overview-grid is-single');
-  secondary.append(volume);
-  if (state.role === 'owner') secondary.append(renderAgentWorkload(stats));
-  content.append(secondary);
+  return volume;
+}
+
+// Torre de control de supervisión: quién está en línea y en qué, qué se está demorando y qué espera dueño.
+function towerSnapshot() {
+  const online = new Set(state.online);
+  const team = state.agents.filter((agent) => agent.role === 'agent' && agent.active && !agent.removed_at);
+  const atRisk = state.tickets
+    .filter((ticket) => ticketUrgency(ticket))
+    .sort((a, b) => urgencyRank(a) - urgencyRank(b) || new Date(a.last_message_at) - new Date(b.last_message_at));
+  const queue = state.tickets
+    .filter((ticket) => !ticket.assigned_agent_id && !['resolved', 'closed'].includes(ticket.status))
+    .sort((a, b) => urgencyRank(a) - urgencyRank(b) || new Date(a.created_at) - new Date(b.created_at));
+  return {
+    online,
+    team,
+    atRisk,
+    queue,
+    onlineCount: team.filter((agent) => online.has(agent.user_id)).length,
+    urgentCount: atRisk.filter((ticket) => ticketUrgency(ticket)?.level === 'urgent').length,
+  };
+}
+
+function renderControlTower(content, stats) {
+  const tower = towerSnapshot();
+  const availableCount = tower.team.filter((agent) => agent.available).length;
+  const metrics = element('section', 'overview-metrics tower-metrics');
+  const risk = renderStatCard('En riesgo de SLA', tower.atRisk.length, tower.urgentCount
+    ? `${tower.urgentCount} ${tower.urgentCount === 1 ? 'urgente' : 'urgentes'}`
+    : 'Ninguno urgente', `stat-risk${tower.atRisk.length ? ' is-hot' : ''}`, 'alert');
+  const online = renderStatCard('Agentes en línea', tower.onlineCount, `de ${tower.team.length} · ${availableCount} ${availableCount === 1 ? 'disponible' : 'disponibles'}`, 'stat-online', 'pulse');
+  metrics.append(
+    renderStatCard('Sin asignar', stats.unassigned, 'Esperan dueño', 'stat-unassigned', 'queue'),
+    risk,
+    renderStatCard('Requieren atención', stats.active, `${Number(stats.open) || 0} sin revisar`, 'stat-active', 'bolt'),
+    online,
+    renderStatCard('Esperando respuesta', stats.waiting_on_user, 'Pendientes del usuario', 'stat-waiting', 'clock')
+  );
+  content.append(metrics);
+
+  const live = element('div', 'overview-grid tower-grid');
+  live.append(renderTowerTeam(tower), renderTowerTickets({
+    className: 'tower-risk',
+    title: 'En riesgo',
+    subtitle: 'Lo que más se demoró, primero. Reasigná sin abrir el ticket.',
+    tickets: tower.atRisk,
+    empty: 'Nada demorado. El equipo viene al día.',
+    filter: 'all',
+  }));
+  content.append(live);
+
+  const queue = element('div', 'overview-grid tower-grid');
+  queue.append(renderTowerTickets({
+    className: 'tower-queue',
+    title: 'Cola sin asignar',
+    subtitle: 'Tickets que todavía no tienen a nadie. Asignalos con un clic.',
+    tickets: tower.queue,
+    empty: 'La cola está vacía.',
+    filter: 'unassigned',
+  }), renderStatusBreakdown(stats));
+  content.append(queue, renderVolumeCard(stats));
+}
+
+function towerActivity(agentId) {
+  for (const [ticketId, people] of Object.entries(state.typing)) {
+    if (people[agentId]) return { ticketId, kind: people[agentId] };
+  }
+  for (const [ticketId, people] of Object.entries(state.viewers)) {
+    if (people.includes(agentId)) return { ticketId, kind: 'view' };
+  }
+  return null;
+}
+
+function renderTowerTeam(tower = towerSnapshot()) {
+  const section = element('section', 'overview-card tower-team');
+  const heading = element('div', 'section-heading');
+  const title = element('div', '');
+  title.append(element('h2', '', 'Equipo en vivo'), element('p', 'muted', 'Quién está conectado, en qué ticket y con cuánta carga.'));
+  const badge = element('span', `live-pill${state.liveOk ? ' is-live' : ''}`);
+  badge.append(element('span', 'live-pill-dot'), element('span', '', `${tower.onlineCount} en línea`));
+  heading.append(title, badge);
+  section.append(heading);
+  if (!tower.team.length) {
+    section.append(element('p', 'empty', 'Todavía no hay agentes habilitados.'));
+    return section;
+  }
+  const risky = {};
+  tower.atRisk.forEach((ticket) => {
+    if (ticket.assigned_agent_id) risky[ticket.assigned_agent_id] = (risky[ticket.assigned_agent_id] || 0) + 1;
+  });
+  const loads = tower.team.map((agent) => Number(agent.active_tickets) || 0);
+  const scale = Math.max(5, ...loads);
+  const list = element('div', 'tower-team-list');
+  [...tower.team]
+    .sort((a, b) => Number(tower.online.has(b.user_id)) - Number(tower.online.has(a.user_id))
+      || (Number(b.active_tickets) || 0) - (Number(a.active_tickets) || 0))
+    .forEach((agent) => {
+      const member = teamMember(agent.user_id);
+      const name = memberName(member, agent.email);
+      const isOnline = tower.online.has(agent.user_id);
+      const row = element('div', `tower-member${isOnline ? ' is-online' : ''}`);
+      const face = element('span', 'tower-face');
+      face.append(renderAvatar(name, member?.avatar_path, 'md'), element('span', 'presence-dot'));
+      const info = element('div', 'tower-member-info');
+      const nameRow = element('div', 'tower-member-name');
+      nameRow.append(element('strong', '', name));
+      nameRow.append(element('span', `availability-pill ${agent.available ? 'is-available' : 'is-paused'}`, agent.available ? 'Disponible' : 'En pausa'));
+      info.append(nameRow);
+      const activity = isOnline ? towerActivity(agent.user_id) : null;
+      const ticket = activity && state.tickets.find((item) => item.id === activity.ticketId);
+      if (activity && ticket) {
+        const doing = activity.kind === 'reply' ? 'Respondiendo' : activity.kind === 'note' ? 'Escribiendo una nota en' : 'Mirando';
+        const link = element('button', `tower-activity is-${activity.kind}`);
+        link.type = 'button';
+        link.title = 'Abrir ese ticket';
+        link.append(icon(activity.kind === 'view' ? 'eye' : 'reply'), element('span', '', `${doing} «${ticket.subject}»`));
+        link.addEventListener('click', () => selectTicket(ticket.id));
+        info.append(link);
+      } else {
+        info.append(element('span', 'tower-activity is-idle', isOnline ? 'En línea, sin ticket abierto' : 'Desconectado'));
+      }
+      const load = element('div', 'tower-load');
+      const active = Number(agent.active_tickets) || 0;
+      const track = element('span', 'tower-load-track');
+      const bar = element('span', `tower-load-bar${active >= scale * 0.8 ? ' is-high' : ''}`);
+      bar.style.width = `${Math.round((active / scale) * 100)}%`;
+      track.append(bar);
+      const numbers = element('span', 'tower-load-text', `${active} ${active === 1 ? 'activo' : 'activos'}`);
+      load.append(track, numbers);
+      if (risky[agent.user_id]) load.append(element('span', 'urgency urgency-late', `${risky[agent.user_id]} en riesgo`));
+      info.append(load);
+      row.append(face, info);
+      list.append(row);
+    });
+  section.append(list);
+  return section;
+}
+
+function paintTowerTeam() {
+  if (state.page !== 'overview' || state.role !== 'supervisor') return;
+  const current = app.querySelector('.tower-team');
+  if (!current) return;
+  const tower = towerSnapshot();
+  current.replaceWith(renderTowerTeam(tower));
+  const online = app.querySelector('.stat-online');
+  if (online) {
+    online.querySelector('.stat-value').textContent = tower.onlineCount.toLocaleString('es-AR');
+    const availableCount = tower.team.filter((agent) => agent.available).length;
+    online.querySelector('.stat-detail').textContent = `de ${tower.team.length} · ${availableCount} ${availableCount === 1 ? 'disponible' : 'disponibles'}`;
+  }
+}
+
+function renderTowerTickets({ className, title, subtitle, tickets, empty, filter }) {
+  const section = element('section', `overview-card tower-tickets ${className}`);
+  const heading = element('div', 'section-heading');
+  const copy = element('div', '');
+  copy.append(element('h2', '', title), element('p', 'muted', subtitle));
+  const more = element('button', 'text-button section-link', tickets.length > TOWER_ROWS ? `Ver los ${tickets.length}` : 'Ver bandeja');
+  more.type = 'button';
+  more.append(icon('arrow'));
+  more.addEventListener('click', () => {
+    state.filter = filter;
+    state.selectedId = null;
+    if (filter === 'all') state.ticketSort = 'urgent';
+    navigateTo('tickets');
+  });
+  heading.append(copy, more);
+  section.append(heading);
+  if (!tickets.length) {
+    const calm = element('div', 'tower-empty');
+    calm.append(icon('check'), element('span', '', empty));
+    section.append(calm);
+    return section;
+  }
+  const list = element('div', 'tower-ticket-list');
+  tickets.slice(0, TOWER_ROWS).forEach((ticket) => list.append(renderTowerTicket(ticket)));
+  section.append(list);
+  return section;
+}
+
+function renderTowerTicket(ticket) {
+  const row = element('div', 'tower-ticket');
+  const open = element('button', 'tower-ticket-open');
+  open.type = 'button';
+  const urgency = ticketUrgency(ticket);
+  const main = element('span', 'tower-ticket-main');
+  const top = element('span', 'tower-ticket-top');
+  top.append(element('strong', '', ticket.client_name));
+  if (urgency) top.append(element('span', `urgency urgency-${urgency.level}`, urgency.label));
+  main.append(top, element('span', 'tower-ticket-subject', ticket.subject));
+  open.append(main, element('time', '', formatAge(ticket.last_message_at)));
+  open.addEventListener('click', () => selectTicket(ticket.id));
+
+  const select = document.createElement('select');
+  select.className = 'tower-assign';
+  select.setAttribute('aria-label', `Asignar «${ticket.subject}»`);
+  const assignee = state.agents.find((agent) => agent.user_id === ticket.assigned_agent_id);
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = ticket.assigned_agent_id ? 'Devolver a la cola' : 'Asignar a…';
+  select.append(placeholder);
+  if (assignee && assignee.role !== 'agent') {
+    const lead = document.createElement('option');
+    lead.value = assignee.user_id;
+    lead.textContent = assignee.user_id === state.session?.user?.id ? 'Vos' : memberName(teamMember(assignee.user_id), assignee.email);
+    lead.disabled = true;
+    select.append(lead);
+  }
+  const online = new Set(state.online);
+  state.agents
+    .filter((agent) => agent.role === 'agent' && agent.active && !agent.removed_at)
+    .forEach((agent) => {
+      const option = document.createElement('option');
+      option.value = agent.user_id;
+      const flags = [`${Number(agent.active_tickets) || 0} activos`];
+      if (!agent.available) flags.push('en pausa');
+      else if (online.has(agent.user_id)) flags.push('en línea');
+      const name = memberName(teamMember(agent.user_id), agent.email);
+      // La opción elegida muestra solo el nombre para que entre en el select cerrado.
+      option.textContent = agent.user_id === ticket.assigned_agent_id ? name : `${name} · ${flags.join(' · ')}`;
+      select.append(option);
+    });
+  select.value = ticket.assigned_agent_id || '';
+  if (ticket.assigned_agent_id && select.value !== ticket.assigned_agent_id) {
+    const gone = document.createElement('option');
+    gone.value = ticket.assigned_agent_id;
+    gone.textContent = 'Fuera del equipo';
+    gone.disabled = true;
+    select.append(gone);
+    select.value = ticket.assigned_agent_id;
+  }
+  select.disabled = state.busy;
+  select.addEventListener('change', () => {
+    if (select.value === (ticket.assigned_agent_id || '')) return;
+    void assignTicket(ticket.id, select.value || null);
+  });
+  row.append(open, select);
+  return row;
 }
 
 function renderRecentRow(ticket) {
@@ -2942,7 +3253,7 @@ async function setMyAvailability() {
 
 async function refreshDashboard() {
   const requests = [loadDashboardStats(), loadTickets(), loadTeam()];
-  if (state.role === 'owner') requests.push(loadAgents());
+  if (isLead()) requests.push(loadAgents());
   await Promise.all(requests);
 }
 
@@ -3044,7 +3355,7 @@ function renderDashboard() {
   const meText = element('span', 'account-meta');
   meText.append(
     element('span', 'account-name', myName),
-    element('span', 'account-role', state.role === 'owner' ? 'Propietario' : 'Agente de soporte')
+    element('span', 'account-role', state.role === 'agent' ? 'Agente de soporte' : roleNames[state.role])
   );
   me.append(renderAvatar(myName, state.profile?.avatar_path, 'sm'), meText);
   me.addEventListener('click', () => navigateTo('profile'));
@@ -3250,7 +3561,8 @@ function renderTicketResults(list, heading) {
       ticket.platform,
       ticket.app_version,
       ticket.id,
-      state.role === 'owner' ? assignedAgent?.email : '',
+      isLead() ? memberName(teamMember(assignedAgent?.user_id), '') : '',
+      isLead() ? assignedAgent?.email : '',
     ].filter(Boolean).join(' ').toLocaleLowerCase('es-AR');
     return searchable.includes(query);
   });
@@ -3389,7 +3701,7 @@ function buildCommands() {
   if (ticket) {
     const canTake = ticket.assigned_agent_id !== myId
       && !['resolved', 'closed'].includes(ticket.status)
-      && (state.role === 'owner' || !ticket.assigned_agent_id);
+      && (isLead() || !ticket.assigned_agent_id);
     if (canTake) items.push({ group: 'Este ticket', label: 'Tomar ticket', keywords: 'asignarme quedarme', featured: true, run: () => claimTicket(ticket.id) });
     items.push(
       { group: 'Este ticket', label: 'Escribir nota interna', hint: 'N', keywords: 'nota privada equipo susurro whisper', featured: true, run: () => setComposerMode('note') },
@@ -3655,7 +3967,7 @@ function notifyDesktop({ fresh, replies, assignedToMe, mentions, userId }) {
   assignedToMe.forEach((ticket) => push({
     kind: 'assigned', ticketId: ticket.id, title: 'Te asignaron un ticket', line: `Asignado: ${ticket.client_name}`, body: `${ticket.client_name}: ${ticket.subject}`,
   }));
-  replies.filter((ticket) => ticket.assigned_agent_id === userId || (state.role === 'owner' && !ticket.assigned_agent_id)).forEach((ticket) => push({
+  replies.filter((ticket) => ticket.assigned_agent_id === userId || (isLead() && !ticket.assigned_agent_id)).forEach((ticket) => push({
     kind: 'reply', ticketId: ticket.id, title: `${ticket.client_name} respondió`, line: `Respuesta: ${ticket.client_name}`, body: ticket.subject,
   }));
   mentions.forEach((note) => {
@@ -3689,10 +4001,12 @@ function startLive() {
     supabase: state.supabase,
     userId,
     onChange: () => void pollSupport(),
-    onPresence: ({ viewers, typing }) => {
+    onPresence: ({ viewers, typing, online }) => {
       state.viewers = viewers;
       state.typing = typing;
+      state.online = online || [];
       paintViewers();
+      paintTowerTeam();
     },
     onStatus: (ok) => {
       state.liveOk = ok;
@@ -3709,6 +4023,7 @@ function stopLive() {
   state.liveOk = false;
   state.viewers = {};
   state.typing = {};
+  state.online = [];
   stopTyping();
 }
 
@@ -4129,7 +4444,7 @@ async function boot() {
     return;
   }
   state.role = role;
-  if (role !== 'owner' && role !== 'agent') {
+  if (role !== 'owner' && role !== 'supervisor' && role !== 'agent') {
     renderUnauthorized();
     return;
   }
@@ -4188,7 +4503,7 @@ async function boot() {
   startPolling();
   startLive();
   const dashboardRequests = [loadDashboardStats(), loadTeam()];
-  if (state.role === 'owner') dashboardRequests.push(loadAgents());
+  if (isLead()) dashboardRequests.push(loadAgents());
   else state.agents = [];
   await Promise.all(dashboardRequests);
   if (requestId !== state.bootRequest) return;

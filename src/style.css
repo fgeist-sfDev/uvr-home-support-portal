@@ -1602,3 +1602,68 @@ dialog.viewer::backdrop { background: #050b0899; }
 @media (prefers-reduced-motion: reduce) {
   .notify-menu:popover-open, .notify-offer-icon .icon, .typing-pill, .typing-dots i { animation: none; }
 }
+/* Torre de control (supervisión): equipo en vivo, tickets en riesgo y cola sin asignar. */
+.stat-risk { --tone: #c2410c; --tone-soft: #fdebdd; }
+.stat-risk.is-hot .stat-icon { animation: tower-hot 2.4s ease-in-out infinite; }
+@keyframes tower-hot {
+  0%, 100% { box-shadow: 0 0 0 0 #c2410c00; }
+  50% { box-shadow: 0 0 0 5px #c2410c1f; }
+}
+.stat-online { --tone: #3f8f3a; --tone-soft: #e5f4df; }
+.tower-team .live-pill { flex: none; border-color: #dfe9d6; background: #f3f8ee; color: #3d5f2c; }
+.tower-team .live-pill:not(.is-live) .live-pill-dot { background: #c9b07a; }
+.tower-team-list { display: grid; margin: 0 -8px; }
+.tower-member { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 12px; padding: 11px 8px; border-radius: 12px; transition: background-color .15s ease; }
+.tower-member + .tower-member { box-shadow: 0 -1px 0 #f0f2ef; }
+.tower-member:hover { background: #f6f9f4; box-shadow: none; }
+.tower-member:hover + .tower-member { box-shadow: none; }
+.tower-face { position: relative; flex: none; display: inline-flex; }
+.tower-face .presence-dot { position: absolute; right: -2px; bottom: -2px; width: 12px; height: 12px; border: 2.5px solid #fff; border-radius: 50%; background: #c3cac5; }
+.tower-member.is-online .presence-dot { background: #4cb944; }
+.tower-member:not(.is-online) .avatar { filter: saturate(.35); opacity: .75; }
+.tower-member-info { min-width: 0; display: grid; gap: 4px; }
+.tower-member-name { min-width: 0; display: flex; align-items: center; gap: 8px; }
+.tower-member-name strong { min-width: 0; overflow: hidden; color: #1f3029; font-size: 13.5px; text-overflow: ellipsis; white-space: nowrap; }
+.tower-activity { min-width: 0; max-width: 100%; display: inline-flex; align-items: center; justify-self: start; gap: 6px; padding: 0; border: 0; background: none; color: #4c6e5d; font-size: 12px; font-weight: 600; text-align: left; }
+.tower-activity span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tower-activity .icon { width: 14px; height: 14px; flex: none; }
+button.tower-activity { cursor: pointer; }
+button.tower-activity:hover span { text-decoration: underline; text-underline-offset: 2px; }
+.tower-activity.is-reply { color: #8a5a10; }
+.tower-activity.is-note { color: #6b4fa3; }
+.tower-activity.is-idle { color: #8a948e; font-weight: 500; }
+.tower-load { min-width: 0; display: flex; align-items: center; gap: 8px; }
+.tower-load-track { flex: 1 1 auto; max-width: 180px; height: 6px; overflow: hidden; border-radius: 99px; background: #eef2ec; }
+.tower-load-bar { display: block; height: 100%; min-width: 4px; border-radius: inherit; background: linear-gradient(90deg, #9fd36a, #2f6f56); transition: width .3s ease; }
+.tower-load-bar.is-high { background: linear-gradient(90deg, #f0b45f, #c2410c); }
+.tower-load-text { flex: none; color: #6f7b74; font-size: 11.5px; font-variant-numeric: tabular-nums; }
+
+.tower-ticket-list { display: grid; margin: 0 -8px; }
+.tower-ticket { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(130px, 190px); align-items: center; gap: 10px; padding: 4px 8px; border-radius: 12px; }
+.tower-ticket + .tower-ticket { box-shadow: 0 -1px 0 #f0f2ef; }
+.tower-ticket:hover { background: #f6f9f4; box-shadow: none; }
+.tower-ticket:hover + .tower-ticket { box-shadow: none; }
+.tower-ticket-open { min-width: 0; display: flex; align-items: center; gap: 10px; padding: 7px 0; border: 0; background: none; color: inherit; cursor: pointer; text-align: left; }
+.tower-ticket-main { flex: 1 1 auto; min-width: 0; display: grid; gap: 2px; }
+.tower-ticket-top { min-width: 0; display: flex; align-items: center; gap: 7px; }
+.tower-ticket-top strong { min-width: 0; overflow: hidden; color: #1f3029; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.tower-ticket-subject { overflow: hidden; color: #6f7b74; font-size: 12.5px; text-overflow: ellipsis; white-space: nowrap; }
+.tower-ticket-open time { flex: none; color: #8a948e; font-size: 11.5px; }
+.tower-assign { width: 100%; min-width: 0; min-height: 32px; padding: 5px 28px 5px 10px; border: 1px solid #dfe6dc; border-radius: 9px; background: #fff; color: #34443d; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; text-overflow: ellipsis; }
+.tower-assign:hover { border-color: #c6d6c3; }
+.tower-assign:focus-visible { outline: 2px solid #9fd36a; outline-offset: 1px; }
+.tower-empty { display: flex; align-items: center; gap: 10px; padding: 18px 14px; border: 1px dashed #dbe5d4; border-radius: 12px; background: #f8fbf5; color: #4c6e5d; font-size: 13px; font-weight: 600; }
+.tower-empty .icon { width: 18px; height: 18px; flex: none; color: #4f9a47; }
+
+.agent-card.is-supervisor { border-color: #e2dcf2; background: linear-gradient(120deg, #fff, #f7f5fd); }
+.agent-role.is-supervisor { background: #efeafb; color: #5b45a0; }
+.agent-state.is-supervising { background: #f2f0f8; color: #5f5875; }
+.agent-actions .role-button { border-color: #ddd5f1; color: #5b45a0; }
+.agent-actions .role-button:hover { border-color: #c8bcea; background: #f7f5fd; color: #4a3790; }
+
+@media (max-width: 860px) {
+  .tower-ticket { grid-template-columns: minmax(0, 1fr); gap: 2px; padding-bottom: 10px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .stat-risk.is-hot .stat-icon { animation: none; }
+}
