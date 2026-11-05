@@ -1158,3 +1158,59 @@ body { background: #f2f4f1; }
 @media (max-width: 760px) {
   .section-heading { flex-direction: row; align-items: flex-start; gap: 10px; }
 }
+
+/* Bandeja con aire: menú en riel, detalles plegables, filtros en una fila. */
+@media (min-width: 861px) {
+  .dashboard.is-inbox { grid-template-columns: 72px minmax(0, 1fr); }
+  .dashboard.is-inbox .app-header { width: 72px; align-items: center; padding: 18px 10px 14px; }
+  .dashboard.is-inbox .header-brand { padding: 0; }
+  .dashboard.is-inbox .header-brand > div:last-child,
+  .dashboard.is-inbox .nav-label,
+  .dashboard.is-inbox .cmd-label,
+  .dashboard.is-inbox .cmd-button kbd,
+  .dashboard.is-inbox .account-meta { display: none; }
+  .dashboard.is-inbox .nav-caption { width: 28px; height: 1px; margin: 24px 0 14px; padding: 0; overflow: hidden; background: #ffffff1c; color: transparent; }
+  .dashboard.is-inbox .header-nav { width: 100%; justify-items: center; gap: 6px; }
+  .dashboard.is-inbox .nav-button { width: 46px; min-height: 44px; justify-content: center; padding: 0; }
+  .dashboard.is-inbox .nav-button.active::before { left: -10px; }
+  .dashboard.is-inbox .nav-badge { position: absolute; top: 3px; right: 1px; min-width: 18px; padding: 1px 5px; font-size: 10px; line-height: 1.35; }
+  .dashboard.is-inbox .header-account { width: 100%; justify-items: center; }
+  .dashboard.is-inbox .cmd-button { width: 46px; min-height: 42px; justify-content: center; padding: 0; }
+  .dashboard.is-inbox .account-card { flex-direction: column; gap: 6px; padding: 6px 4px; border-color: transparent; background: transparent; }
+  .dashboard.is-inbox .account-chip { flex: none; padding: 3px; }
+  .dashboard-main.is-inbox { padding: 16px 18px 16px 16px; }
+}
+
+.detail-split.is-collapsed { grid-template-columns: minmax(0, 1fr); }
+.detail-split.is-collapsed .thread { padding-inline: max(20px, calc((100% - 820px) / 2)); }
+.details-toggle { width: 36px; height: 36px; color: #6d7a72; }
+.details-toggle .icon { width: 18px; height: 18px; }
+.details-toggle.is-on { border-color: #d6e4d0; background: #eef5ea; color: #285543; }
+.client-panel { scrollbar-width: thin; scrollbar-color: #d6ddd7 transparent; }
+
+.filter-pills { flex-wrap: nowrap; gap: 2px; overflow: visible; }
+.filter-pills .pill { padding: 4px 8px; }
+.pill-select { min-height: 29px; margin-left: auto; padding: 4px 24px 4px 9px; border: 1px solid #e3e8e2; border-radius: 7px; background: #fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%236a766f' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E") no-repeat right 8px center; color: #6a766f; font: inherit; font-size: 11px; font-weight: 700; cursor: pointer; appearance: none; }
+.pill-select:hover { border-color: #cfd9cc; }
+.pill-select.is-active { border-color: #dce8d6; background-color: #edf4e9; color: #285543; }
+
+.reply-form { gap: 8px; padding: 10px 16px 12px; }
+.reply-form .reply-input { min-height: 48px; max-height: 32vh; padding-block: 11px; resize: none; }
+.quick-reply { min-height: 28px; padding: 4px 10px; font-size: 11.5px; }
+
+@media (max-width: 860px) {
+  .ticket-controls { display: flex; gap: 8px; }
+  .ticket-controls .take-button { flex: 1 1 auto; }
+  .ticket-controls .details-toggle { flex: none; margin-left: auto; }
+}
+.list-panel, .list-tools, .search-row { min-width: 0; }
+.filter-pills { min-width: 0; overflow-x: auto; scrollbar-width: none; -webkit-mask-image: linear-gradient(90deg, #000 92%, transparent); mask-image: linear-gradient(90deg, #000 92%, transparent); }
+.filter-pills::-webkit-scrollbar { display: none; }
+@media (min-width: 1101px) {
+  .dashboard.is-inbox .dashboard-columns { grid-template-columns: minmax(320px, 380px) minmax(0, 1fr); }
+}
+.filter-row { min-width: 0; display: flex; align-items: center; gap: 6px; }
+.filter-row .filter-pills { flex: 1 1 auto; }
+.filter-row .pill-select { flex: none; margin-left: 0; }
+.filter-row .pill-select { width: auto; min-width: 0; max-width: 132px; }
+.filter-row .pill-select { field-sizing: content; }

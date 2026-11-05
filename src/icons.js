@@ -67,6 +67,10 @@ const shapes = {
     ['circle', { cx: 12, cy: 12, r: 9 }],
     ['path', { d: 'M10 9v6M14 9v6' }],
   ],
+  panel: [
+    ['rect', { x: 3, y: 4, width: 18, height: 16, rx: 2.2 }],
+    ['path', { d: 'M15 4v16' }],
+  ],
   arrow: [
     ['path', { d: 'M5 12h14' }],
     ['path', { d: 'm13 6 6 6-6 6' }],

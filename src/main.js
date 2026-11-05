@@ -48,6 +48,14 @@ const ticketFilters = [
   ['resolved', 'Resueltos'],
   ['closed', 'Cerrados'],
 ];
+const DETAILS_PREF = 'uvr.support.showDetails';
+const readDetailsPref = () => {
+  try {
+    const saved = localStorage.getItem(DETAILS_PREF);
+    if (saved !== null) return saved !== '0';
+  } catch { /* Sin almacenamiento: se usa el valor por pantalla. */ }
+  return window.matchMedia('(min-width: 861px)').matches;
+};
 const state = {
   supabase: null,
   session: null,
@@ -65,6 +73,7 @@ const state = {
   dashboardStats: null,
   selectedId: null,
   filter: 'open',
+  showDetails: readDetailsPref(),
   ticketSearch: '',
   ticketSort: 'recent',
   ticketLimit: TICKET_PAGE_SIZE,
@@ -698,6 +707,17 @@ function renderDetail(ticket) {
       : assignTicket(ticket.id, assignment.value || null)));
     field('Asignado a', assignment);
   }
+  const detailsToggle = element('button', `icon-button details-toggle${state.showDetails ? ' is-on' : ''}`);
+  detailsToggle.type = 'button';
+  detailsToggle.title = state.showDetails ? 'Ocultar detalles' : 'Mostrar detalles';
+  detailsToggle.setAttribute('aria-label', 'Detalles del ticket');
+  detailsToggle.setAttribute('aria-pressed', String(state.showDetails));
+  detailsToggle.append(icon('panel'));
+  detailsToggle.addEventListener('click', () => {
+    state.showDetails = !state.showDetails;
+    try { localStorage.setItem(DETAILS_PREF, state.showDetails ? '1' : '0'); } catch { /* Sin almacenamiento: queda solo en memoria. */ }
+    renderDashboard();
+  });
   const takenByMeNow = ticket.assigned_agent_id === state.session?.user?.id;
   const canTake = !takenByMeNow
     && !['resolved', 'closed'].includes(ticket.status)
@@ -724,15 +744,15 @@ function renderDetail(ticket) {
   const statusField = element('label', 'manage-field');
   statusField.append(element('span', '', 'Estado'), status);
   manageFields.prepend(statusField);
-  header.append(backToList, title);
-  if (controls.childElementCount) header.append(controls);
+  controls.append(detailsToggle);
+  header.append(backToList, title, controls);
   panel.append(header);
 
   const thread = element('div', 'thread');
   thread.dataset.ticketId = ticket.id;
   state.messages.forEach((message) => thread.append(renderMessage(message)));
   if (!state.messages.length) thread.append(element('p', 'muted thread-empty', 'Todavía no hay mensajes.'));
-  const split = element('div', 'detail-split');
+  const split = element('div', state.showDetails ? 'detail-split' : 'detail-split is-collapsed');
   const main = element('div', 'detail-main');
   main.append(thread);
 
@@ -748,17 +768,23 @@ function renderDetail(ticket) {
   const textarea = document.createElement('textarea');
   textarea.className = 'text-input reply-input';
   textarea.name = 'reply';
-  textarea.rows = 3;
+  textarea.rows = 2;
   textarea.maxLength = 4000;
   textarea.required = true;
   const firstName = String(ticket.client_name || '').trim().split(/\s+/)[0];
   textarea.placeholder = firstName ? `Escribile a ${firstName}…` : 'Escribile al usuario…';
   textarea.setAttribute('aria-label', 'Respuesta');
   textarea.value = state.drafts[ticket.id] || '';
+  const fitTextarea = () => {
+    textarea.style.height = 'auto';
+    textarea.style.height = `${textarea.scrollHeight + 2}px`;
+  };
   textarea.addEventListener('input', () => {
     if (textarea.value) state.drafts[ticket.id] = textarea.value;
     else delete state.drafts[ticket.id];
+    fitTextarea();
   });
+  if (textarea.value) requestAnimationFrame(fitTextarea);
   textarea.addEventListener('keydown', (event) => {
     if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
       event.preventDefault();
@@ -814,7 +840,8 @@ function renderDetail(ticket) {
     await sendReply(ticket.id, new FormData(form).get('reply')?.toString().trim());
   });
   main.append(form);
-  split.append(main, renderClientPanel(ticket, manage));
+  split.append(main);
+  if (state.showDetails) split.append(renderClientPanel(ticket, manage));
   panel.append(split);
   return panel;
 }
@@ -1784,6 +1811,7 @@ function renderDashboard() {
   const navButton = (page, label, iconName) => {
     const button = element('button', state.page === page ? 'nav-button active' : 'nav-button');
     button.type = 'button';
+    button.title = label;
     button.append(icon(iconName, 'nav-icon'), element('span', 'nav-label', label));
     if (state.page === page) button.setAttribute('aria-current', 'page');
     button.addEventListener('click', () => navigateTo(page));
@@ -1860,12 +1888,14 @@ function renderDashboard() {
   const pills = element('div', 'filter-pills');
   pills.setAttribute('role', 'group');
   pills.setAttribute('aria-label', 'Filtrar por estado');
-  const pillOptions = [['all', 'Todos'], ...ticketFilters];
-  pillOptions.splice(4, 0, ['unassigned', 'Sin asignar']);
-  pillOptions.forEach(([value, label]) => {
-    const count = value === 'all'
-      ? state.tickets.length
-      : state.tickets.filter((ticket) => (value === 'unassigned' ? !ticket.assigned_agent_id : ticket.status === value)).length;
+  const countFor = (value) => (value === 'all'
+    ? state.tickets.length
+    : state.tickets.filter((ticket) => (value === 'unassigned' ? !ticket.assigned_agent_id : ticket.status === value)).length);
+  const filterLabel = Object.fromEntries(ticketFilters);
+  const primaryFilters = [['all', 'Todos'], ['open', filterLabel.open], ['waiting_on_user', filterLabel.waiting_on_user], ['unassigned', 'Sin asignar']];
+  const moreFilters = ticketFilters.filter(([value]) => !primaryFilters.some(([primary]) => primary === value));
+  primaryFilters.forEach(([value, label]) => {
+    const count = countFor(value);
     const pill = element('button', 'pill', label);
     pill.type = 'button';
     pill.setAttribute('aria-pressed', state.filter === value ? 'true' : 'false');
@@ -1876,7 +1906,29 @@ function renderDashboard() {
     });
     pills.append(pill);
   });
-  tools.append(searchRow, pills);
+  const more = document.createElement('select');
+  const moreActive = moreFilters.some(([value]) => value === state.filter);
+  more.className = `pill pill-select${moreActive ? ' is-active' : ''}`;
+  more.setAttribute('aria-label', 'Más estados');
+  const moreLabel = document.createElement('option');
+  moreLabel.value = '';
+  moreLabel.textContent = 'Más';
+  more.append(moreLabel);
+  moreFilters.forEach(([value, label]) => {
+    const option = document.createElement('option');
+    option.value = value;
+    const count = countFor(value);
+    option.textContent = count ? `${label} · ${count}` : label;
+    more.append(option);
+  });
+  more.value = moreActive ? state.filter : '';
+  more.addEventListener('change', () => {
+    state.filter = more.value || 'all';
+    renderDashboard();
+  });
+  const filterRow = element('div', 'filter-row');
+  filterRow.append(pills, more);
+  tools.append(searchRow, filterRow);
 
   const list = element('div', 'ticket-list');
   list.setAttribute('aria-label', 'Bandeja de tickets');
