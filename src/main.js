@@ -4,6 +4,7 @@ import './style.css';
 import './theme-dark.css';
 import { icon } from './icons.js';
 import { closePalette, isPaletteOpen, openPalette } from './palette.js';
+import { renderConfigPage, resetConfigPage } from './config.js';
 import { createLiveChannel } from './realtime.js';
 import {
   disableNotify,
@@ -3258,7 +3259,7 @@ async function refreshDashboard() {
 }
 
 function routeFromHash() {
-  const match = /^#\/(tickets|agents|profile)(?:\/([0-9a-f-]{36}))?$/i.exec(window.location.hash);
+  const match = /^#\/(tickets|agents|config|profile)(?:\/([0-9a-f-]{36}))?$/i.exec(window.location.hash);
   if (!match) return { page: 'overview', ticketId: null };
   return { page: match[1].toLowerCase(), ticketId: match[2] || null };
 }
@@ -3266,6 +3267,7 @@ function routeFromHash() {
 function routeHash() {
   if (state.page === 'tickets') return state.selectedId ? `#/tickets/${state.selectedId}` : '#/tickets';
   if (state.page === 'profile') return '#/profile';
+  if (state.page === 'config') return '#/config';
   return state.page === 'agents' ? '#/agents' : '#/';
 }
 
@@ -3303,7 +3305,12 @@ function applyRoute({ restoring = false } = {}) {
   if (restoring && route.ticketId) state.filter = 'all';
 }
 
+function isOwnerPage(page) {
+  return page === 'agents' || page === 'config';
+}
+
 function navigateTo(page) {
+  if (page === 'config' && state.page !== 'config') resetConfigPage();
   state.page = page;
   state.error = '';
   if (page === 'tickets') {
@@ -3319,7 +3326,7 @@ function navigateTo(page) {
 window.addEventListener('popstate', () => {
   if (!state.authorized) return;
   applyRoute();
-  if (state.role !== 'owner' && state.page === 'agents') state.page = 'overview';
+  if (state.role !== 'owner' && isOwnerPage(state.page)) state.page = 'overview';
   state.messages = [];
   state.activity = [];
   state.threadFor = null;
@@ -3395,7 +3402,10 @@ function renderDashboard() {
     tickets.append(element('span', 'nav-badge', openCount > 99 ? '99+' : String(openCount)));
     tickets.setAttribute('aria-label', `Tickets, ${openCount} ${openCount === 1 ? 'abierto' : 'abiertos'}`);
   }
-  if (state.role === 'owner') navButton('agents', 'Usuarios', 'users');
+  if (state.role === 'owner') {
+    navButton('agents', 'Usuarios', 'users');
+    navButton('config', 'Configuración', 'settings');
+  }
   header.append(brand, element('span', 'nav-caption', 'MENÚ'), nav, account);
   shell.append(header);
 
@@ -3403,6 +3413,19 @@ function renderDashboard() {
   content.tabIndex = -1;
   if (state.role === 'owner' && state.page === 'agents') {
     renderAgentManagement(content);
+    shell.append(content);
+    app.replaceChildren(shell);
+    return;
+  }
+  if (state.role === 'owner' && state.page === 'config') {
+    renderConfigPage(content, {
+      supabase: state.supabase,
+      userFacingError,
+      toast: (message) => showToast(message, '', null, 6000),
+      rerender: () => {
+        if (state.authorized && state.page === 'config') renderDashboard();
+      },
+    });
     shell.append(content);
     app.replaceChildren(shell);
     return;
@@ -3681,7 +3704,12 @@ function buildCommands() {
     { group: 'Ir a', label: 'Mi perfil', keywords: 'foto nombre descripcion cuenta', featured: true, run: () => navigateTo('profile') },
   ];
   if (state.role === 'owner') {
-    items.splice(2, 0, { group: 'Ir a', label: 'Usuarios', keywords: 'equipo agentes invitar', featured: true, run: () => navigateTo('agents') });
+    items.splice(
+      2,
+      0,
+      { group: 'Ir a', label: 'Usuarios', keywords: 'equipo agentes invitar', featured: true, run: () => navigateTo('agents') },
+      { group: 'Ir a', label: 'Configuración', keywords: 'rubros tareas precios minimos requisitos funciones comisiones niveles desafios historial', featured: true, run: () => navigateTo('config') }
+    );
   }
   ticketFilters.concat([['unassigned', 'Sin asignar'], ['all', 'Todos']]).forEach(([value, label]) => {
     items.push({
@@ -3796,7 +3824,7 @@ window.matchMedia('(min-width: 1280px)').addEventListener('change', () => {
 
 async function pollSupport() {
   // Con la pestaña oculta solo sondeamos si el agente activó los avisos de escritorio.
-  if (!state.authorized || state.busy || (document.hidden && notifyStatus() !== 'on') || state.page === 'agents') return;
+  if (!state.authorized || state.busy || (document.hidden && notifyStatus() !== 'on') || isOwnerPage(state.page)) return;
   if (state.polling) {
     state.pollQueued = true;
     return;
@@ -4498,7 +4526,7 @@ async function boot() {
   state.authorized = true;
   loadDrafts();
   loadNotifyPrefs(state.session?.user?.id);
-  if (state.role !== 'owner' && state.page === 'agents') state.page = 'overview';
+  if (state.role !== 'owner' && isOwnerPage(state.page)) state.page = 'overview';
   syncRoute({ replace: true });
   startPolling();
   startLive();
@@ -4507,7 +4535,7 @@ async function boot() {
   else state.agents = [];
   await Promise.all(dashboardRequests);
   if (requestId !== state.bootRequest) return;
-  if (state.page === 'agents') return;
+  if (isOwnerPage(state.page)) return;
   await loadTickets();
   if (requestId !== state.bootRequest) return;
   if (state.page === 'tickets' && state.selectedId && !state.messages.length) await loadMessages(state.selectedId);
